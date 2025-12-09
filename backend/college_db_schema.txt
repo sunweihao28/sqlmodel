@@ -1,0 +1,210 @@
+# 数据库结构说明
+
+## 数据库概览
+
+- 表数量: 11
+- 总列数: 46
+
+## 表: advisor
+
+**数据行数**: 2,000
+
+**主键**: s_ID
+
+**外键关系**:
+  - i_ID → instructor.ID
+  - s_ID → student.ID
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| s_ID | varchar(5) | NO | PRI | - | - |
+| i_ID | varchar(5) | YES | MUL | - | - |
+
+## 表: classroom
+
+**数据行数**: 30
+
+**主键**: building, room_number
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| building | varchar(15) | NO | PRI | - | - |
+| room_number | varchar(7) | NO | PRI | - | - |
+| capacity | decimal(4,0) | YES |  | - | - |
+
+## 表: course
+
+**数据行数**: 200
+
+**主键**: course_id
+
+**外键关系**:
+  - dept_name → department.dept_name
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| course_id | varchar(8) | NO | PRI | - | - |
+| title | varchar(50) | YES |  | - | - |
+| dept_name | varchar(20) | YES | MUL | - | - |
+| credits | decimal(2,0) | YES |  | - | - |
+
+## 表: department
+
+**数据行数**: 20
+
+**主键**: dept_name
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| dept_name | varchar(20) | NO | PRI | - | - |
+| building | varchar(15) | YES |  | - | - |
+| budget | decimal(12,2) | YES |  | - | - |
+
+## 表: instructor
+
+**数据行数**: 50
+
+**主键**: ID
+
+**外键关系**:
+  - dept_name → department.dept_name
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| ID | varchar(5) | NO | PRI | - | - |
+| name | varchar(20) | NO |  | - | - |
+| dept_name | varchar(20) | YES | MUL | - | - |
+| salary | decimal(8,2) | YES |  | - | - |
+
+## 表: prereq
+
+**数据行数**: 100
+
+**主键**: course_id, prereq_id
+
+**外键关系**:
+  - course_id → course.course_id
+  - prereq_id → course.course_id
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| course_id | varchar(8) | NO | PRI | - | - |
+| prereq_id | varchar(8) | NO | PRI | - | - |
+
+## 表: section
+
+**数据行数**: 100
+
+**主键**: course_id, sec_id, semester, year
+
+**外键关系**:
+  - course_id → course.course_id
+  - building → classroom.building
+  - room_number → classroom.room_number
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| course_id | varchar(8) | NO | PRI | - | - |
+| sec_id | varchar(8) | NO | PRI | - | - |
+| semester | varchar(6) | NO | PRI | - | - |
+| year | decimal(4,0) | NO | PRI | - | - |
+| building | varchar(15) | YES | MUL | - | - |
+| room_number | varchar(7) | YES |  | - | - |
+| time_slot_id | varchar(4) | YES |  | - | - |
+
+## 表: student
+
+**数据行数**: 2,000
+
+**主键**: ID
+
+**外键关系**:
+  - dept_name → department.dept_name
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| ID | varchar(5) | NO | PRI | - | - |
+| name | varchar(20) | NO |  | - | - |
+| dept_name | varchar(20) | YES | MUL | - | - |
+| tot_cred | decimal(3,0) | YES |  | - | - |
+
+## 表: takes
+
+**数据行数**: 30,000
+
+**主键**: ID, course_id, sec_id, semester, year
+
+**外键关系**:
+  - course_id → section.course_id
+  - ID → student.ID
+  - sec_id → section.sec_id
+  - semester → section.semester
+  - year → section.year
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| ID | varchar(5) | NO | PRI | - | - |
+| course_id | varchar(8) | NO | PRI | - | - |
+| sec_id | varchar(8) | NO | PRI | - | - |
+| semester | varchar(6) | NO | PRI | - | - |
+| year | decimal(4,0) | NO | PRI | - | - |
+| grade | varchar(2) | YES |  | - | - |
+
+## 表: teaches
+
+**数据行数**: 100
+
+**主键**: ID, course_id, sec_id, semester, year
+
+**外键关系**:
+  - course_id → section.course_id
+  - ID → instructor.ID
+  - sec_id → section.sec_id
+  - semester → section.semester
+  - year → section.year
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| ID | varchar(5) | NO | PRI | - | - |
+| course_id | varchar(8) | NO | PRI | - | - |
+| sec_id | varchar(8) | NO | PRI | - | - |
+| semester | varchar(6) | NO | PRI | - | - |
+| year | decimal(4,0) | NO | PRI | - | - |
+
+## 表: time_slot
+
+**数据行数**: 20
+
+**主键**: time_slot_id, day, start_hr, start_min
+
+### 列信息:
+
+| 列名 | 数据类型 | 是否可空 | 键类型 | 默认值 | 说明 |
+|------|----------|----------|--------|--------|------|
+| time_slot_id | varchar(4) | NO | PRI | - | - |
+| day | varchar(1) | NO | PRI | - | - |
+| start_hr | decimal(2,0) | NO | PRI | - | - |
+| start_min | decimal(2,0) | NO | PRI | - | - |
+| end_hr | decimal(2,0) | YES |  | - | - |
+| end_min | decimal(2,0) | YES |  | - | - |
+

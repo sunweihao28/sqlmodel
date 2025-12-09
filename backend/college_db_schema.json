@@ -1,0 +1,624 @@
+[
+  {
+    "tableName": "advisor",
+    "columns": [
+      {
+        "name": "s_ID",
+        "type": "varchar(5)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "i_ID",
+        "type": "varchar(5)",
+        "nullable": "YES",
+        "key": "MUL",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "s_ID"
+    ],
+    "foreign_keys": [
+      {
+        "column": "i_ID",
+        "references_table": "instructor",
+        "references_column": "ID",
+        "constraint_name": "advisor_ibfk_1"
+      },
+      {
+        "column": "s_ID",
+        "references_table": "student",
+        "references_column": "ID",
+        "constraint_name": "advisor_ibfk_2"
+      }
+    ],
+    "rowCount": 2000
+  },
+  {
+    "tableName": "classroom",
+    "columns": [
+      {
+        "name": "building",
+        "type": "varchar(15)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "room_number",
+        "type": "varchar(7)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "capacity",
+        "type": "decimal(4,0)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "building",
+      "room_number"
+    ],
+    "foreign_keys": [],
+    "rowCount": 30
+  },
+  {
+    "tableName": "course",
+    "columns": [
+      {
+        "name": "course_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "title",
+        "type": "varchar(50)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "dept_name",
+        "type": "varchar(20)",
+        "nullable": "YES",
+        "key": "MUL",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "credits",
+        "type": "decimal(2,0)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "course_id"
+    ],
+    "foreign_keys": [
+      {
+        "column": "dept_name",
+        "references_table": "department",
+        "references_column": "dept_name",
+        "constraint_name": "course_ibfk_1"
+      }
+    ],
+    "rowCount": 200
+  },
+  {
+    "tableName": "department",
+    "columns": [
+      {
+        "name": "dept_name",
+        "type": "varchar(20)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "building",
+        "type": "varchar(15)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "budget",
+        "type": "decimal(12,2)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "dept_name"
+    ],
+    "foreign_keys": [],
+    "rowCount": 20
+  },
+  {
+    "tableName": "instructor",
+    "columns": [
+      {
+        "name": "ID",
+        "type": "varchar(5)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "name",
+        "type": "varchar(20)",
+        "nullable": "NO",
+        "key": "",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "dept_name",
+        "type": "varchar(20)",
+        "nullable": "YES",
+        "key": "MUL",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "salary",
+        "type": "decimal(8,2)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "ID"
+    ],
+    "foreign_keys": [
+      {
+        "column": "dept_name",
+        "references_table": "department",
+        "references_column": "dept_name",
+        "constraint_name": "instructor_ibfk_1"
+      }
+    ],
+    "rowCount": 50
+  },
+  {
+    "tableName": "prereq",
+    "columns": [
+      {
+        "name": "course_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "prereq_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "course_id",
+      "prereq_id"
+    ],
+    "foreign_keys": [
+      {
+        "column": "course_id",
+        "references_table": "course",
+        "references_column": "course_id",
+        "constraint_name": "prereq_ibfk_1"
+      },
+      {
+        "column": "prereq_id",
+        "references_table": "course",
+        "references_column": "course_id",
+        "constraint_name": "prereq_ibfk_2"
+      }
+    ],
+    "rowCount": 100
+  },
+  {
+    "tableName": "section",
+    "columns": [
+      {
+        "name": "course_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "sec_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "semester",
+        "type": "varchar(6)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "year",
+        "type": "decimal(4,0)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "building",
+        "type": "varchar(15)",
+        "nullable": "YES",
+        "key": "MUL",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "room_number",
+        "type": "varchar(7)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "time_slot_id",
+        "type": "varchar(4)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "course_id",
+      "sec_id",
+      "semester",
+      "year"
+    ],
+    "foreign_keys": [
+      {
+        "column": "course_id",
+        "references_table": "course",
+        "references_column": "course_id",
+        "constraint_name": "section_ibfk_1"
+      },
+      {
+        "column": "building",
+        "references_table": "classroom",
+        "references_column": "building",
+        "constraint_name": "section_ibfk_2"
+      },
+      {
+        "column": "room_number",
+        "references_table": "classroom",
+        "references_column": "room_number",
+        "constraint_name": "section_ibfk_2"
+      }
+    ],
+    "rowCount": 100
+  },
+  {
+    "tableName": "student",
+    "columns": [
+      {
+        "name": "ID",
+        "type": "varchar(5)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "name",
+        "type": "varchar(20)",
+        "nullable": "NO",
+        "key": "",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "dept_name",
+        "type": "varchar(20)",
+        "nullable": "YES",
+        "key": "MUL",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "tot_cred",
+        "type": "decimal(3,0)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "ID"
+    ],
+    "foreign_keys": [
+      {
+        "column": "dept_name",
+        "references_table": "department",
+        "references_column": "dept_name",
+        "constraint_name": "student_ibfk_1"
+      }
+    ],
+    "rowCount": 2000
+  },
+  {
+    "tableName": "takes",
+    "columns": [
+      {
+        "name": "ID",
+        "type": "varchar(5)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "course_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "sec_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "semester",
+        "type": "varchar(6)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "year",
+        "type": "decimal(4,0)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "grade",
+        "type": "varchar(2)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "ID",
+      "course_id",
+      "sec_id",
+      "semester",
+      "year"
+    ],
+    "foreign_keys": [
+      {
+        "column": "course_id",
+        "references_table": "section",
+        "references_column": "course_id",
+        "constraint_name": "takes_ibfk_1"
+      },
+      {
+        "column": "ID",
+        "references_table": "student",
+        "references_column": "ID",
+        "constraint_name": "takes_ibfk_2"
+      },
+      {
+        "column": "sec_id",
+        "references_table": "section",
+        "references_column": "sec_id",
+        "constraint_name": "takes_ibfk_1"
+      },
+      {
+        "column": "semester",
+        "references_table": "section",
+        "references_column": "semester",
+        "constraint_name": "takes_ibfk_1"
+      },
+      {
+        "column": "year",
+        "references_table": "section",
+        "references_column": "year",
+        "constraint_name": "takes_ibfk_1"
+      }
+    ],
+    "rowCount": 30000
+  },
+  {
+    "tableName": "teaches",
+    "columns": [
+      {
+        "name": "ID",
+        "type": "varchar(5)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "course_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "sec_id",
+        "type": "varchar(8)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "semester",
+        "type": "varchar(6)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "year",
+        "type": "decimal(4,0)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "ID",
+      "course_id",
+      "sec_id",
+      "semester",
+      "year"
+    ],
+    "foreign_keys": [
+      {
+        "column": "course_id",
+        "references_table": "section",
+        "references_column": "course_id",
+        "constraint_name": "teaches_ibfk_1"
+      },
+      {
+        "column": "ID",
+        "references_table": "instructor",
+        "references_column": "ID",
+        "constraint_name": "teaches_ibfk_2"
+      },
+      {
+        "column": "sec_id",
+        "references_table": "section",
+        "references_column": "sec_id",
+        "constraint_name": "teaches_ibfk_1"
+      },
+      {
+        "column": "semester",
+        "references_table": "section",
+        "references_column": "semester",
+        "constraint_name": "teaches_ibfk_1"
+      },
+      {
+        "column": "year",
+        "references_table": "section",
+        "references_column": "year",
+        "constraint_name": "teaches_ibfk_1"
+      }
+    ],
+    "rowCount": 100
+  },
+  {
+    "tableName": "time_slot",
+    "columns": [
+      {
+        "name": "time_slot_id",
+        "type": "varchar(4)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "day",
+        "type": "varchar(1)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "start_hr",
+        "type": "decimal(2,0)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "start_min",
+        "type": "decimal(2,0)",
+        "nullable": "NO",
+        "key": "PRI",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "end_hr",
+        "type": "decimal(2,0)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      },
+      {
+        "name": "end_min",
+        "type": "decimal(2,0)",
+        "nullable": "YES",
+        "key": "",
+        "default": "",
+        "comment": ""
+      }
+    ],
+    "primary_keys": [
+      "time_slot_id",
+      "day",
+      "start_hr",
+      "start_min"
+    ],
+    "foreign_keys": [],
+    "rowCount": 20
+  }
+]
