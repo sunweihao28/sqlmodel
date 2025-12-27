@@ -1,0 +1,5 @@
+{
+  "name": "DataNexus AI - Text to SQL Agent",
+  "description": "An intelligent data query agent that converts natural language to SQL, executes queries, and visualizes results using Google Gemini.",
+  "requestFramePermissions": []
+}
