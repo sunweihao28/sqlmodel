@@ -887,7 +887,7 @@ def batch_process_questions(client: OpenAI, questions: list, db_root_path: str, 
 # ============================================================================
 
 if __name__ == "__main__":
-    API_KEY = os.getenv("OPENAI_API_KEY", "sk-voNjlAd5LKEGjyVLKDUqOxvM0uMKFNh7vif9bKCgd5M8kJCb")
+    API_KEY = os.getenv("OPENAI_API_KEY", "YOUR_API_KEY")
     BASE_URL = os.getenv("OPENAI_BASE_URL", "https://open.xiaojingai.com/v1")
     DB_ROOT_PATH = "database"
     model = "gpt-4o"
