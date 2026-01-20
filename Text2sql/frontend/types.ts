@@ -1,5 +1,4 @@
 
-
 export type Role = 'user' | 'model';
 
 export type ChartType = 'bar' | 'line' | 'pie' | 'table';
@@ -19,15 +18,19 @@ export interface SqlResult {
   summary: string;
 }
 
+export type MessageStatus = 'thinking' | 'pending_approval' | 'executing' | 'executed' | 'error';
+
 export interface Message {
   id: string;
   role: Role;
   content: string;
   timestamp: number;
+  
   // Extras for model responses
+  status?: MessageStatus;
   sqlQuery?: string;
   executionResult?: SqlResult;
-  isThinking?: boolean;
+  error?: string;
 }
 
 export interface Session {
@@ -58,11 +61,3 @@ export interface AppSettings {
   useSimulationMode: boolean;
   dbConfig: DbConfig;
 }
-
-export const AVAILABLE_MODELS = [
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'Google' },
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3.0 Pro', provider: 'Google' },
-  { id: 'deepseek-r1', name: 'DeepSeek R1', provider: 'DeepSeek' },
-  { id: 'qwen-max', name: 'Qwen Max', provider: 'Alibaba' },
-  { id: 'doubao-pro', name: 'Doubao Pro', provider: 'ByteDance' },
-];

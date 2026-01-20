@@ -1,4 +1,5 @@
 
+
 export const translations = {
   en: {
     newAnalysis: "New Analysis",
@@ -12,11 +13,11 @@ export const translations = {
     suggestion1Sub: "\"Show total sales by region...\"",
     suggestion2: "Customer Insights",
     suggestion2Sub: "\"Identify top 3 customers...\"",
-    processing: "Processing...",
+    processing: "Thinking...",
     inputPlaceholder: "Ask a question about your data...",
     upload: "Upload Database",
     disclaimer: "Frontend Demo Mode. No real SQL is executed.",
-    generatedSql: "Generated SQL",
+    generatedSql: "Proposed SQL",
     resultAnalysis: "Result Analysis",
     visualization: "Visualization",
     noData: "No data returned",
@@ -54,7 +55,12 @@ export const translations = {
     uploadSuccess: "Database Mounted!",
     uploadError: "Upload failed. Check backend console.",
     usingFile: "Using file:",
-    clearFile: "Clear File"
+    clearFile: "Clear File",
+    // Execution
+    runQuery: "Run Query",
+    executing: "Executing SQL...",
+    executionError: "Execution Failed",
+    waitingApproval: "Review the SQL below before executing."
   },
   zh: {
     newAnalysis: "新建分析",
@@ -63,16 +69,16 @@ export const translations = {
     model: "模型",
     envConnected: "仿真环境",
     greeting: "我能帮您分析什么数据？",
-    greetingSub: "这是一个纯前端演示版。上传 CSV 或直接提问，查看 AI 如何生成 SQL 并可视化数据。",
+    greetingSub: "上传数据库文件并提问，查看 AI 如何生成 SQL 并可视化数据。",
     suggestion1: "销售分析",
     suggestion1Sub: "“显示各地区总销售额...”",
     suggestion2: "客户洞察",
     suggestion2Sub: "“识别前 3 名最有价值客户...”",
-    processing: "分析中...",
+    processing: "思考中...",
     inputPlaceholder: "询问关于数据的问题...",
     upload: "上传数据库",
-    disclaimer: "前端演示模式。未执行真实 SQL。",
-    generatedSql: "生成的 SQL",
+    disclaimer: "",
+    generatedSql: "建议执行的 SQL",
     resultAnalysis: "结果分析",
     visualization: "可视化图表",
     noData: "未返回数据",
@@ -110,6 +116,11 @@ export const translations = {
     uploadSuccess: "数据库挂载成功！",
     uploadError: "上传失败，请检查后端日志。",
     usingFile: "正在使用文件：",
-    clearFile: "清除文件"
+    clearFile: "清除文件",
+    // Execution
+    runQuery: "运行查询",
+    executing: "正在执行 SQL...",
+    executionError: "执行失败",
+    waitingApproval: "请在执行前检查下方的 SQL 语句。"
   }
 };

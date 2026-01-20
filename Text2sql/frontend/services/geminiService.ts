@@ -1,6 +1,6 @@
 
 import { GoogleGenAI } from "@google/genai";
-import { AppSettings, Message, SqlResult, AVAILABLE_MODELS } from "../types";
+import { AppSettings, Message, SqlResult } from "../types";
 import { api } from "./api";
 
 // Mock Schema for the simulation
@@ -17,20 +17,16 @@ Columns: id (INT), name (VARCHAR), email (VARCHAR), signup_date (DATE), country 
 
 // Helper: Get API Key safely
 const getApiKey = (settings?: AppSettings): string | undefined => {
-  // If user provided a custom key in settings, use it.
   if (settings?.customApiKey) return settings.customApiKey;
-  // Otherwise try environment variable (for simulation mode primarily)
   return process.env.API_KEY;
 };
 
-// Helper: Generate a short title for the session based on the first prompt
+// Helper: Generate a short title
 export const generateSessionTitle = async (firstUserMessage: string, language: 'en' | 'zh' = 'en'): Promise<string> => {
   const apiKey = getApiKey();
-  // Always use Gemini for lightweight title generation if API key exists
   if (!apiKey) return language === 'zh' ? "分析会话" : "Analysis Session";
   
   const ai = new GoogleGenAI({ apiKey: apiKey });
-  
   const prompt = language === 'zh'
     ? `为以这个问题开始的数据分析会话生成一个非常简短、简洁的标题（最多 5 个字）："${firstUserMessage}"。不要使用引号。`
     : `Generate a very short, concise title (max 5 words) for a data analysis session starting with this question: "${firstUserMessage}". Do not use quotes.`;
@@ -46,142 +42,132 @@ export const generateSessionTitle = async (firstUserMessage: string, language: '
   }
 };
 
-export const generateSqlAndAnalysis = async (
-  query: string,
-  history: Message[],
-  settings: AppSettings
-): Promise<{ text: string; sql?: string; result?: SqlResult }> => {
+// --- NEW SPLIT ARCHITECTURE ---
 
-  // ---------------------------------------------------------
-  // MODE A: REAL BACKEND EXECUTION
-  // If a file ID is present in settings, we use the real Python backend.
-  // ---------------------------------------------------------
+/**
+ * Step 1: Generate SQL Draft (but do not run it)
+ */
+export const createSqlDraft = async (
+  query: string, 
+  history: Message[], 
+  settings: AppSettings
+): Promise<{ text: string; sql?: string; error?: string }> => {
+
+  // A. REAL BACKEND
   if (settings.dbConfig.fileId) {
       try {
-          // Use custom API key if available, otherwise backend handles it
-          const apiKey = settings.customApiKey || undefined;
-          
-          const response = await api.analyzeData(query, settings.dbConfig.fileId, apiKey);
-          
+          const sql = await api.generateSqlDraft(
+              query, 
+              history, 
+              settings.dbConfig.fileId, 
+              settings.customApiKey,
+              settings.customBaseUrl,
+              settings.model
+          );
           return {
-              text: response.answer,
-              sql: response.sql,
-              result: {
-                  columns: response.columns,
-                  data: response.data,
-                  // Heuristic for chart type
-                  chartTypeSuggestion: response.data.length > 0 && Object.keys(response.data[0]).length === 2 ? 'bar' : 'table',
-                  summary: "Executed on real database."
-              }
+              text: settings.language === 'zh' ? "我已生成查询语句，请确认后运行。" : "I have generated the SQL. Please review and execute.",
+              sql: sql
           };
       } catch (error: any) {
           return {
-              text: settings.language === 'zh' 
-                ? `后端执行错误: ${error.message}` 
-                : `Backend execution error: ${error.message}`,
+              text: settings.language === 'zh' ? `生成失败: ${error.message}` : `Generation failed: ${error.message}`,
+              error: error.message
           };
       }
   }
 
-  // ---------------------------------------------------------
-  // MODE B: FRONTEND SIMULATION (Gemini Mock)
-  // ---------------------------------------------------------
-  
+  // B. SIMULATION (Google Gemini)
   const apiKey = getApiKey(settings);
   if (!apiKey) {
-    return {
-      text: settings.language === 'zh'
-        ? "❌ 未检测到 API Key。请在设置中输入您的 API Key，或配置环境变量。"
-        : "❌ API Key missing. Please enter your API Key in Settings or env variables."
-    };
-  }
-
-  // Logic for Model Selection (in simulation, we just use Gemini to mock other models)
-  let modelName = 'gemini-2.5-flash';
-  let isGoogleModel = true;
-
-  if (settings.model.includes('gemini')) {
-    modelName = settings.model;
-  } else {
-    isGoogleModel = false;
-    // Fallback to Gemini for the demo
-    modelName = 'gemini-2.5-flash';
+    return { text: "❌ API Key missing." };
   }
 
   const ai = new GoogleGenAI({ apiKey: apiKey });
-
   const systemInstruction = `
-    You are an expert Data Analyst and SQL Engineer.
-    Your goal is to answer user questions by converting natural language to SQL queries.
-    
-    Context:
-    You are working with a PostgreSQL database.
-    
-    Database Schema:
-    ${SAMPLE_SCHEMA}
-
-    Instructions:
-    1. Analyze the user's request.
-    2. Generate a valid PostgreSQL query to answer the question.
-    3. If the user asks for a visualization, suggest a chart type (bar, line, pie).
-    4. Provide a brief explanation of what the query does. ${settings.language === 'zh' ? 'The explanation MUST be in Chinese.' : ''}
-    5. Return the response in a structured JSON format.
-
-    IMPORTANT: Return ONLY raw JSON without markdown formatting.
-    Structure:
-    {
-      "explanation": "string",
-      "sql": "string",
-      "chartType": "bar" | "line" | "pie" | "table",
-      "dataSimulation": [ ...array of objects representing the result dataset... ]
-    }
-    
-    For "dataSimulation", generate realistic mock data (5-10 rows) that would result from executing the SQL. 
-    This is for a frontend demo where no real DB is connected.
-    
-    ${!isGoogleModel ? `NOTE: You are simulating the behavior of the model: ${settings.model}.` : ''}
+    You are an SQL Engineer.
+    Schema: ${SAMPLE_SCHEMA}
+    Task: Convert the user's question into a valid SQL query.
+    Return JSON: { "sql": "SELECT ...", "explanation": "Brief explanation" }
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: modelName,
+      model: 'gemini-2.5-flash',
       contents: [
-        ...history.map(msg => ({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }]
-        })),
+        ...history.map(msg => ({ role: msg.role === 'user' ? 'user' : 'model', parts: [{ text: msg.content }] })),
         { role: 'user', parts: [{ text: query }] }
       ],
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json"
-      }
+      config: { systemInstruction, responseMimeType: "application/json" }
     });
-
-    const jsonText = response.text || "{}";
-    const parsed = JSON.parse(jsonText);
-
+    const parsed = JSON.parse(response.text || "{}");
     return {
-      text: parsed.explanation,
-      sql: parsed.sql,
-      result: {
-        columns: parsed.dataSimulation && parsed.dataSimulation.length > 0 ? Object.keys(parsed.dataSimulation[0]) : [],
-        data: parsed.dataSimulation || [],
-        chartTypeSuggestion: parsed.chartType || 'table',
-        summary: "Query executed successfully on simulated database."
-      }
+        text: parsed.explanation || "SQL generated.",
+        sql: parsed.sql
     };
-
-  } catch (error: any) {
-    console.error("Gemini API Error:", error);
-    let errorMsg = error.message || "";
-    if (errorMsg.includes("401")) {
-        errorMsg = "API Key 无效 (401 Unauthorized)。请检查您的 Key 是否正确。";
-    }
-    return {
-      text: settings.language === 'zh' 
-        ? `遇到错误: ${errorMsg}` 
-        : `Error encountered: ${errorMsg}`,
-    };
+  } catch (e: any) {
+    return { text: "Error generating mock SQL", error: e.message };
   }
+};
+
+/**
+ * Step 2: Execute the SQL (User confirmed)
+ */
+export const executeSqlDraft = async (
+    sql: string,
+    originalMessage: string,
+    settings: AppSettings
+): Promise<{ text: string; result?: SqlResult; error?: string }> => {
+
+    // A. REAL BACKEND
+    if (settings.dbConfig.fileId) {
+        try {
+            const response = await api.executeSql(
+                sql, 
+                originalMessage, 
+                settings.dbConfig.fileId, 
+                settings.customApiKey,
+                settings.customBaseUrl,
+                settings.model
+            );
+            return {
+                text: response.answer,
+                result: {
+                    columns: response.columns,
+                    data: response.data,
+                    chartTypeSuggestion: response.data.length > 0 && Object.keys(response.data[0]).length === 2 ? 'bar' : 'table',
+                    summary: "Real execution result."
+                }
+            };
+        } catch (error: any) {
+            return { text: "Execution Error", error: error.message };
+        }
+    }
+
+    // B. SIMULATION (Generate Mock Data based on SQL)
+    const apiKey = getApiKey(settings);
+    const ai = new GoogleGenAI({ apiKey: apiKey! });
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: `Generate realistic JSON data (array of objects) that would be returned by this SQL query: "${sql}". 
+            Context: ${originalMessage}.
+            Schema: ${SAMPLE_SCHEMA}.
+            Return JSON format: { "data": [...], "explanation": "Analysis of the result" }`,
+            config: { responseMimeType: "application/json" }
+        });
+        const parsed = JSON.parse(response.text || "{}");
+        const data = parsed.data || [];
+        return {
+            text: parsed.explanation || "Analysis complete.",
+            result: {
+                columns: data.length > 0 ? Object.keys(data[0]) : [],
+                data: data,
+                chartTypeSuggestion: 'bar',
+                summary: "Simulated result."
+            }
+        };
+    } catch (e: any) {
+        return { text: "Error executing mock SQL", error: e.message };
+    }
 };

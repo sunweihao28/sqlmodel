@@ -2,13 +2,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Settings, Plus, MessageSquare, Send, Upload, LayoutGrid, 
-  Database, Loader2, Menu, Sparkles, LogOut, User as UserIcon
+  Database, Loader2, Menu, Sparkles, LogOut, User as UserIcon,
+  Bot
 } from 'lucide-react';
-import { generateSqlAndAnalysis, generateSessionTitle } from './services/geminiService';
+import { createSqlDraft, executeSqlDraft, generateSessionTitle } from './services/geminiService';
 import SettingsModal from './components/SettingsModal';
 import MessageBubble from './components/MessageBubble';
 import AuthPage from './components/AuthPage';
-import { Session, Message, AppSettings, AVAILABLE_MODELS, User } from './types';
+import { Session, Message, AppSettings, User } from './types';
 import { translations } from './i18n';
 import { api } from './services/api';
 
@@ -79,7 +80,6 @@ function App() {
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem('current_user');
-    // Reset sessions on logout
     setSessions([{
         id: '1', title: t.newAnalysis, messages: [], updatedAt: Date.now()
     }]);
@@ -88,7 +88,6 @@ function App() {
   const handleLanguageChange = (lang: 'en' | 'zh') => {
       setSettings(prev => ({...prev, language: lang}));
   };
-
 
   // --- Logic Handlers ---
   const handleNewSession = () => {
@@ -103,6 +102,7 @@ function App() {
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
 
+  // 1. STEP ONE: Generate Draft SQL
   const handleSendMessage = async () => {
     if (!input.trim() || isProcessing) return;
     
@@ -127,7 +127,8 @@ function App() {
     }
 
     try {
-      const response = await generateSqlAndAnalysis(
+      // Step 1: Just generate the SQL, don't execute it
+      const response = await createSqlDraft(
         userMsg.content, 
         currentSession.messages,
         settings
@@ -138,7 +139,8 @@ function App() {
         role: 'model',
         content: response.text,
         sqlQuery: response.sql,
-        executionResult: response.result,
+        status: response.sql ? 'pending_approval' : 'error', // If valid SQL, wait for approval
+        error: response.error,
         timestamp: Date.now()
       };
 
@@ -154,18 +156,60 @@ function App() {
     }
   };
 
+  // 2. STEP TWO: Execute Confirmed SQL
+  const handleExecuteSql = async (messageId: string, sql: string) => {
+    // Update status to 'executing'
+    setSessions(prev => prev.map(s => {
+        if (s.id !== currentSessionId) return s;
+        return {
+            ...s,
+            messages: s.messages.map(m => m.id === messageId ? { ...m, status: 'executing' } : m)
+        };
+    }));
+
+    try {
+        // Find user question for context
+        const session = sessions.find(s => s.id === currentSessionId);
+        const userMsg = session?.messages[session.messages.length - 2]; // Assumption: User msg is right before
+        const context = userMsg ? userMsg.content : "Execute SQL";
+
+        const response = await executeSqlDraft(sql, context, settings);
+
+        setSessions(prev => prev.map(s => {
+            if (s.id !== currentSessionId) return s;
+            return {
+                ...s,
+                messages: s.messages.map(m => m.id === messageId ? { 
+                    ...m, 
+                    status: response.error ? 'error' : 'executed',
+                    content: response.text, // Update explanation with actual analysis
+                    executionResult: response.result,
+                    error: response.error
+                } : m)
+            };
+        }));
+
+    } catch (error) {
+        setSessions(prev => prev.map(s => {
+            if (s.id !== currentSessionId) return s;
+            return {
+                ...s,
+                messages: s.messages.map(m => m.id === messageId ? { ...m, status: 'error', error: "Frontend Execution Error" } : m)
+            };
+        }));
+    }
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
-    setIsProcessing(true); // Show loader during analysis
+    setIsProcessing(true); 
     
     try {
-        // 1. Upload the file
         const result = await api.uploadFile(file);
         
-        // 2. Update settings locally first so we can use them immediately
         const newSettings = {
           ...settings,
           useSimulationMode: false,
@@ -179,19 +223,16 @@ function App() {
         };
         setSettings(newSettings);
 
-        // 3. Trigger Auto-Summary using the uploaded file ID
-        // Note: We use result.id directly because state update is async
         let summaryText = "";
         try {
-           summaryText = await api.getDbSummary(result.id, settings.customApiKey);
+           summaryText = await api.getDbSummary(result.id, settings.customApiKey, settings.customBaseUrl, settings.model);
         } catch (sumErr) {
-           console.error("Summary generation failed", sumErr);
+           console.error("Summary failed", sumErr);
            summaryText = settings.language === 'zh' 
-             ? "文件上传成功，但自动分析失败。您现在可以提问了。" 
-             : "File uploaded, but summary failed. You can ask questions now.";
+             ? "文件上传成功。请提问以开始分析。" 
+             : "File uploaded. Ask questions to analyze.";
         }
 
-        // 4. Add the summary as a message from the bot
         const botMsg: Message = {
           id: Date.now().toString(),
           role: 'model',
@@ -204,7 +245,6 @@ function App() {
           messages: [...s.messages, botMsg] 
         } : s));
         
-        // Also update title if it's a new session
         if (currentSession.messages.length === 0) {
            setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: file.name } : s));
         }
@@ -214,12 +254,10 @@ function App() {
     } finally {
         setIsUploading(false);
         setIsProcessing(false);
-        // Clear the input value so the same file can be selected again if needed
         e.target.value = '';
     }
   };
 
-  // --- Render Auth Page if not logged in ---
   if (!user) {
     return (
       <AuthPage 
@@ -230,7 +268,6 @@ function App() {
     );
   }
 
-  // --- Render Main App ---
   return (
     <div className="flex h-screen bg-background text-text overflow-hidden">
       
@@ -270,7 +307,6 @@ function App() {
           ))}
         </div>
 
-        {/* User Profile & Settings Area */}
         <div className="p-3 border-t border-secondary min-w-64 bg-[#161718]">
           <div className="flex items-center gap-3 px-3 py-3 mb-2 rounded-lg bg-[#2a2b2d]/50">
              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-purple-500 to-pink-500 flex items-center justify-center text-xs font-bold text-white shrink-0">
@@ -311,17 +347,16 @@ function App() {
             >
               <Menu size={20} />
             </button>
-            <div className="flex items-center gap-2 bg-[#2a2b2d] rounded-lg p-1">
-              <span className="text-xs text-subtext pl-2">{t.model}:</span>
-              <select 
+            <div className="flex items-center gap-2 bg-[#2a2b2d] rounded-lg px-3 py-1.5 border border-transparent focus-within:border-accent transition-colors">
+              <Bot size={16} className="text-subtext" />
+              <input 
+                type="text"
                 value={settings.model}
                 onChange={(e) => setSettings(s => ({...s, model: e.target.value}))}
-                className="bg-transparent text-sm text-text font-medium py-1 px-2 outline-none cursor-pointer"
-              >
-                {AVAILABLE_MODELS.map(m => (
-                  <option key={m.id} value={m.id}>{m.name}</option>
-                ))}
-              </select>
+                className="bg-transparent text-sm text-text font-medium outline-none w-36 placeholder-subtext/50"
+                placeholder="Model Name"
+                title="Input Model Name (e.g. gemini-2.5-flash, gpt-4o)"
+              />
             </div>
           </div>
           
@@ -367,7 +402,12 @@ function App() {
           ) : (
             <div className="max-w-4xl mx-auto py-6">
               {currentSession?.messages.map(msg => (
-                <MessageBubble key={msg.id} message={msg} language={settings.language} />
+                <MessageBubble 
+                    key={msg.id} 
+                    message={msg} 
+                    language={settings.language} 
+                    onExecute={handleExecuteSql} 
+                />
               ))}
               {isProcessing && (
                 <div className="flex gap-4 p-6 bg-[#1E1F20]/50">

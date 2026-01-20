@@ -1,5 +1,5 @@
 
-import { User, SqlResult } from '../types';
+import { User, SqlResult, Message } from '../types';
 
 // Points to your local FastAPI backend
 const API_URL = 'http://localhost:8000/api';
@@ -17,9 +17,8 @@ const getHeaders = () => {
 export const api = {
   // Login
   login: async (email: string, password: string): Promise<User> => {
-    // FormData is required for OAuth2PasswordRequestForm in FastAPI
     const formData = new URLSearchParams();
-    formData.append('username', email); // OAuth2 expects 'username' (we use email)
+    formData.append('username', email); 
     formData.append('password', password);
 
     try {
@@ -39,7 +38,7 @@ export const api = {
       const data = await response.json();
       
       return {
-        id: email, // Use email as ID
+        id: email, 
         name: data.user_name,
         email: data.user_email,
         token: data.access_token,
@@ -74,7 +73,6 @@ export const api = {
           throw new Error(errorData.detail || 'Registration failed');
       }
 
-      // After registration, auto-login
       return api.login(email, password);
     } catch (error: any) {
         console.error("Register API Error:", error);
@@ -90,7 +88,6 @@ export const api = {
     const formData = new FormData();
     formData.append('file', file);
 
-    // Headers for upload (do NOT set Content-Type, browser sets it with boundary)
     const userStr = localStorage.getItem('current_user');
     const headers: Record<string, string> = {};
     if (userStr) {
@@ -110,7 +107,7 @@ export const api = {
         throw new Error(errorData.detail || 'Upload failed');
       }
 
-      return await response.json(); // Returns { id, filename, file_path, ... }
+      return await response.json(); 
     } catch (error) {
       console.error("Upload API Error:", error);
       throw error;
@@ -118,14 +115,16 @@ export const api = {
   },
 
   // Get Summary
-  getDbSummary: async (fileId: number, apiKey?: string): Promise<string> => {
+  getDbSummary: async (fileId: number, apiKey?: string, baseUrl?: string, model?: string): Promise<string> => {
     try {
       const response = await fetch(`${API_URL}/chat/summary`, {
           method: 'POST',
           headers: getHeaders(),
           body: JSON.stringify({
               file_id: fileId,
-              api_key: apiKey || null
+              api_key: apiKey || null,
+              base_url: baseUrl || null,
+              model: model || null
           })
       });
 
@@ -142,27 +141,64 @@ export const api = {
     }
   },
 
-  // Chat / Analyze Data
-  analyzeData: async (message: string, fileId: number, apiKey?: string): Promise<{ answer: string, sql: string, columns: string[], data: any[] }> => {
+  // STEP 1: Generate SQL Draft (Human-in-the-loop)
+  generateSqlDraft: async (message: string, history: Message[], fileId: number, apiKey?: string, baseUrl?: string, model?: string): Promise<string> => {
+    const formattedHistory = history.slice(-10).map(msg => ({
+        role: msg.role,
+        content: msg.content
+    }));
+
     try {
-        const response = await fetch(`${API_URL}/chat/analyze`, {
+        const response = await fetch(`${API_URL}/chat/generate`, {
             method: 'POST',
             headers: getHeaders(),
             body: JSON.stringify({
                 message,
                 file_id: fileId,
-                api_key: apiKey || null
+                history: formattedHistory,
+                api_key: apiKey || null,
+                base_url: baseUrl || null,
+                model: model || null
             })
         });
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || 'Analysis failed');
+            throw new Error(errorData.detail || 'Generation failed');
+        }
+
+        const data = await response.json();
+        return data.sql;
+    } catch (error) {
+        console.error("Generation API Error:", error);
+        throw error;
+    }
+  },
+
+  // STEP 2: Execute SQL
+  executeSql: async (sql: string, originalMessage: string, fileId: number, apiKey?: string, baseUrl?: string, model?: string): Promise<{ answer: string, sql: string, columns: string[], data: any[] }> => {
+    try {
+        const response = await fetch(`${API_URL}/chat/execute`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({
+                sql,
+                message: originalMessage,
+                file_id: fileId,
+                api_key: apiKey || null,
+                base_url: baseUrl || null,
+                model: model || null
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || 'Execution failed');
         }
 
         return await response.json();
     } catch (error) {
-        console.error("Analysis API Error:", error);
+        console.error("Execution API Error:", error);
         throw error;
     }
   }
