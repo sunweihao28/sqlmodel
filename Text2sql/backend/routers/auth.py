@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from datetime import timedelta
 import database, models, schemas, auth
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -21,9 +22,12 @@ def register(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
     db.commit()
     db.refresh(new_user)
     
-    access_token = auth.create_access_token(data={"sub": new_user.email})
+    access_token = auth.create_access_token(
+        data={"sub": new_user.email},
+        expires_delta=timedelta(hours=24)
+    )
     return {
-        "access_token": access_token, 
+        "access_token": access_token,
         "token_type": "bearer",
         "user_name": new_user.full_name,
         "user_email": new_user.email
@@ -38,11 +42,23 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    access_token = auth.create_access_token(data={"sub": user.email})
+
+    access_token = auth.create_access_token(
+        data={"sub": user.email},
+        expires_delta=timedelta(hours=24)
+    )
     return {
-        "access_token": access_token, 
+        "access_token": access_token,
         "token_type": "bearer",
         "user_name": user.full_name,
         "user_email": user.email
+    }
+
+@router.get("/me")
+def get_current_user_info(current_user: models.User = Depends(auth.get_current_user)):
+    """获取当前用户信息，用于验证token有效性"""
+    return {
+        "id": current_user.email,
+        "name": current_user.full_name,
+        "email": current_user.email
     }

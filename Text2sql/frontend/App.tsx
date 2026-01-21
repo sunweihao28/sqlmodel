@@ -5,11 +5,11 @@ import {
   Database, Loader2, Menu, Sparkles, LogOut, User as UserIcon,
   Bot
 } from 'lucide-react';
-import { createSqlDraft, executeSqlDraft, generateSessionTitle } from './services/geminiService';
+import { generateSessionTitle } from './services/geminiService';
 import SettingsModal from './components/SettingsModal';
 import MessageBubble from './components/MessageBubble';
 import AuthPage from './components/AuthPage';
-import { Session, Message, AppSettings, User } from './types';
+import { Session, Message, AppSettings, User, AVAILABLE_MODELS, SqlResult, ChartType } from './types';
 import { translations } from './i18n';
 import { api } from './services/api';
 
@@ -17,7 +17,14 @@ function App() {
   // Settings with Defaults
   const [settings, setSettings] = useState<AppSettings>(() => {
      const savedSettings = localStorage.getItem('app_settings');
-     if (savedSettings) return JSON.parse(savedSettings);
+     if (savedSettings) {
+       const parsed = JSON.parse(savedSettings);
+       // 验证模型是否在可用选项中，如果不在则使用默认值
+       const validModel = AVAILABLE_MODELS.some(m => m.value === parsed.model)
+         ? parsed.model
+         : 'gemini-2.5-flash';
+       return { ...parsed, model: validModel };
+     }
 
      return {
       language: 'zh',
@@ -44,8 +51,21 @@ function App() {
 
   // Auth State
   const [user, setUser] = useState<User | null>(() => {
-    const savedUser = localStorage.getItem('current_user');
-    return savedUser ? JSON.parse(savedUser) : null;
+    try {
+      const savedUser = localStorage.getItem('current_user');
+      if (savedUser) {
+        const parsedUser = JSON.parse(savedUser);
+        // 验证用户数据完整性
+        if (parsedUser && parsedUser.token && parsedUser.email) {
+          return parsedUser;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to restore user session:', error);
+      // 清除损坏的数据
+      localStorage.removeItem('current_user');
+    }
+    return null;
   });
 
   const t = translations[settings.language];
@@ -60,6 +80,10 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // 流式生成相关状态
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamController, setStreamController] = useState<AbortController | null>(null);
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const currentSession = sessions.find(s => s.id === currentSessionId)!;
@@ -71,13 +95,46 @@ function App() {
     }
   }, [currentSession?.messages, isProcessing]);
 
+  // 在应用启动时验证token有效性
+  useEffect(() => {
+    const validateTokenOnLoad = async () => {
+      if (!user) return;
+
+      try {
+        // 尝试一个轻量级的API调用来验证token
+        const response = await fetch('http://localhost:8000/api/auth/me', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+          },
+        });
+
+        if (!response.ok) {
+          console.warn('Token validation failed on app load, clearing user session');
+          localStorage.removeItem('current_user');
+          setUser(null);
+          setSessions([{
+            id: '1', title: t.newAnalysis, messages: [], updatedAt: Date.now()
+          }]);
+        }
+      } catch (error) {
+        // 如果无法连接服务器，暂时保留用户状态
+        console.warn('Token validation failed due to network error, keeping user session:', error);
+      }
+    };
+
+    validateTokenOnLoad();
+  }, []); // 只在应用启动时执行一次
+
   // --- Auth Handlers ---
   const handleLogin = (newUser: User) => {
+    console.log('User logged in:', { ...newUser, token: newUser.token ? '[HIDDEN]' : 'MISSING' });
     setUser(newUser);
     localStorage.setItem('current_user', JSON.stringify(newUser));
   };
 
   const handleLogout = () => {
+    console.log('User logged out');
     setUser(null);
     localStorage.removeItem('current_user');
     setSessions([{
@@ -87,6 +144,32 @@ function App() {
 
   const handleLanguageChange = (lang: 'en' | 'zh') => {
       setSettings(prev => ({...prev, language: lang}));
+  };
+
+  // 中断流式生成（支持摘要和Agent分析）
+  const stopStreaming = () => {
+    if (streamController) {
+      streamController.abort();
+      setStreamController(null);
+      setIsStreaming(false);
+      setIsProcessing(false);
+
+      // 更新最后一条模型消息，标记为已中断
+      setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+        ...s,
+        messages: s.messages.map((m, index, arr) => {
+          // 找到最后一条模型消息
+          if (m.role === 'model' && index === arr.length - 1) {
+            return { ...m, content: m.content + "\n\n*[生成已中断]*", status: 'error' as const };
+          }
+          // 或者是摘要消息
+          if (m.id === currentSessionId + '_summary') {
+            return { ...m, content: m.content + "\n\n*[生成已中断]*" };
+          }
+          return m;
+        })
+      } : s));
+    }
   };
 
   // --- Logic Handlers ---
@@ -102,9 +185,17 @@ function App() {
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
 
-  // 1. STEP ONE: Generate Draft SQL
+  // Agent流式分析 - 模型自主决定工具调用
   const handleSendMessage = async () => {
-    if (!input.trim() || isProcessing) return;
+    if (!input.trim() || isProcessing || isStreaming) return;
+    
+    // 检查是否有数据库文件
+    if (!settings.dbConfig.fileId) {
+      alert(settings.language === 'zh' 
+        ? '请先上传数据库文件' 
+        : 'Please upload a database file first');
+      return;
+    }
     
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -118,7 +209,6 @@ function App() {
 
     setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, messages: updatedMessages } : s));
     setInput('');
-    setIsProcessing(true);
 
     if (isFirstMessage) {
       generateSessionTitle(userMsg.content, settings.language).then(newTitle => {
@@ -126,79 +216,316 @@ function App() {
       });
     }
 
+    // 创建初始模型消息用于流式更新
+    const botMsgId = (Date.now() + 1).toString();
+    const initialContent = settings.language === 'zh' 
+      ? "🤔 正在分析您的问题，思考最佳解决方案..." 
+      : "🤔 Analyzing your question and thinking about the best solution...";
+    const botMsg: Message = {
+      id: botMsgId,
+      role: 'model',
+      content: initialContent,
+      status: 'thinking',
+      timestamp: Date.now()
+    };
+
+    // 添加初始消息
+    setSessions(prev => prev.map(s => s.id === currentSessionId ? { 
+      ...s, 
+      messages: [...updatedMessages, botMsg]
+    } : s));
+
+    // 停止之前的流式请求（如果有）
+    if (streamController) {
+      streamController.abort();
+    }
+
+    // 创建新的中断控制器
+    const controller = new AbortController();
+    setStreamController(controller);
+    setIsStreaming(true);
+    setIsProcessing(true);
+
+    let contentText = initialContent;
+    const toolStatus: Record<string, string> = {}; // 记录工具调用状态
+    let hasReceivedText = false; // 跟踪是否收到过文本内容
+    let hasReceivedToolCall = false; // 跟踪是否收到过工具调用
+    let hasReceivedToolResult = false; // 跟踪是否收到过工具执行结果
+
     try {
-      // Step 1: Just generate the SQL, don't execute it
-      const response = await createSqlDraft(
-        userMsg.content, 
+      // 使用流式Agent分析
+      const stopStream = api.agentAnalyzeStream(
+        userMsg.content,
+        settings.dbConfig.fileId!,
         currentSession.messages,
-        settings
+        settings.customApiKey,
+        settings.customBaseUrl,
+        settings.model,
+        12, // maxToolRounds
+        // onText: 实时接收文本
+        (text: string) => {
+          hasReceivedText = true; // 标记已收到文本
+          // 如果contentText还是初始提示，则替换它；否则追加
+          if (contentText === initialContent) {
+            // 检查新文本是否已经有图标，如果没有则添加
+            const hasIcon = /^[🔧📊✅❌💡📝🤔]/.test(text.trim());
+            if (!hasIcon) {
+              // 为分析结果添加图标
+              const iconPrefix = settings.language === 'zh' 
+                ? '💡 ' 
+                : '💡 ';
+              contentText = iconPrefix + text;
+            } else {
+              contentText = text;
+            }
+          } else {
+            contentText += text;
+          }
+          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+            ...s,
+            messages: s.messages.map(m => m.id === botMsgId ? {
+              ...m,
+              content: contentText,
+              status: 'thinking' as const
+            } : m)
+          } : s));
+        },
+        // onToolCall: 工具调用开始
+        (tool: string, status: string, sqlCode?: string) => {
+          hasReceivedToolCall = true; // 标记已收到工具调用
+          toolStatus[tool] = status;
+          // 如果contentText还是初始提示，先清除它
+          if (contentText === initialContent) {
+            contentText = "";
+          }
+          
+          let toolCallText = settings.language === 'zh' 
+            ? `\n\n🔧 **正在执行**: ${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}...` 
+            : `\n\n🔧 **Executing**: ${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}...`;
+          
+          // 如果是SQL查询，显示SQL代码
+          if (tool === 'sql_inter' && sqlCode) {
+            toolCallText += `\n\n\`\`\`sql\n${sqlCode}\n\`\`\``;
+          }
+          
+          contentText = contentText + toolCallText;
+          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+            ...s,
+            messages: s.messages.map(m => m.id === botMsgId ? {
+              ...m,
+              content: contentText,
+              // 如果是SQL查询，保存SQL代码以便后续显示
+              sqlQuery: (tool === 'sql_inter' && sqlCode) ? sqlCode : m.sqlQuery,
+              status: 'executing' as const
+            } : m)
+          } : s));
+        },
+        // onToolResult: 工具执行结果
+        (tool: string, result: string, status: string) => {
+          hasReceivedToolResult = true; // 标记已收到工具执行结果
+          // 移除之前的"正在执行"文本，替换为结果
+          const toolCallPattern = settings.language === 'zh' 
+            ? new RegExp(`🔧 \\*\\*正在执行\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}\\.\\.\\.`, 'g')
+            : new RegExp(`🔧 \\*\\*Executing\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}\\.\\.\\.`, 'g');
+          
+          contentText = contentText.replace(toolCallPattern, '');
+          
+          // 如果contentText还是初始提示，先清除它
+          if (contentText === initialContent) {
+            contentText = "";
+          }
+          
+          if (status === 'success') {
+            // 特殊处理：如果是python_inter工具，检查是否返回可视化配置
+            if (tool === 'python_inter') {
+              try {
+                const parsed = JSON.parse(result);
+                if (parsed.type === 'visualization_config' && parsed.config) {
+                  const vizConfig = parsed.config;
+                  
+                  // 验证配置格式
+                  if (vizConfig.type && vizConfig.data && Array.isArray(vizConfig.data)) {
+                    // 更新消息，添加可视化配置到executionResult
+                    const columns = vizConfig.data.length > 0 ? Object.keys(vizConfig.data[0]) : [];
+                    contentText += settings.language === 'zh'
+                      ? `\n\n📊 已生成可视化配置，图表将在下方显示`
+                      : `\n\n📊 Visualization config generated, chart will be displayed below`;
+                    
+                    setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+                      ...s,
+                      messages: s.messages.map(m => m.id === botMsgId ? {
+                        ...m,
+                        content: contentText,
+                        executionResult: {
+                          columns: columns,
+                          data: vizConfig.data,
+                          chartTypeSuggestion: vizConfig.type,
+                          summary: vizConfig.title || (settings.language === 'zh' ? '可视化图表' : 'Visualization'),
+                          visualizationConfig: vizConfig,  // 存储完整配置（包含 displayType）
+                          displayType: vizConfig.displayType || 'both'  // 传递 displayType
+                        },
+                        status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
+                      } : m)
+                    } : s));
+                    
+                    delete toolStatus[tool];
+                    return; // 提前返回
+                  }
+                }
+              } catch (e) {
+                // 不是JSON或不是可视化配置，继续正常处理
+              }
+            }
+            
+            // 特殊处理：如果是sql_inter工具，只显示执行结果，不进行可视化
+            if (tool === 'sql_inter') {
+              try {
+                const sqlResult = JSON.parse(result);
+                if (sqlResult.columns && sqlResult.rows && Array.isArray(sqlResult.rows)) {
+                  // 只显示执行结果信息，不进行可视化
+                  const rowCount = sqlResult.row_count || sqlResult.rows.length;
+                  const toolResultText = settings.language === 'zh'
+                    ? `\n\n✅ SQL查询执行成功，返回 ${rowCount} 条结果`
+                    : `\n\n✅ SQL query executed successfully, returned ${rowCount} rows`;
+                  contentText += toolResultText;
+                  
+                  // 更新消息，不添加executionResult（不进行可视化）
+                  setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+                    ...s,
+                    messages: s.messages.map(m => m.id === botMsgId ? {
+                      ...m,
+                      content: contentText,
+                      // 不设置executionResult，这样前端不会显示可视化
+                      status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
+                    } : m)
+                  } : s));
+                  
+                  delete toolStatus[tool];
+                  return; // 提前返回，不执行后面的通用处理
+                }
+              } catch (e) {
+                console.error('Failed to parse SQL result:', e);
+                // 如果解析失败，fallback到普通显示
+              }
+            }
+            
+            // 其他工具或解析失败的情况：显示格式化预览
+            const resultPreview = result.length > 300 ? result.substring(0, 300) + '\n...' : result;
+            const toolResultText = settings.language === 'zh'
+              ? `\n\n✅ **${tool}** 执行成功：\n\`\`\`\n${resultPreview}\n\`\`\``
+              : `\n\n✅ **${tool}** executed successfully:\n\`\`\`\n${resultPreview}\n\`\`\``;
+            contentText += toolResultText;
+          } else {
+            const toolErrorText = settings.language === 'zh'
+              ? `\n\n❌ **${tool}** 执行失败: ${result}`
+              : `\n\n❌ **${tool}** execution failed: ${result}`;
+            contentText += toolErrorText;
+          }
+          
+          delete toolStatus[tool];
+          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+            ...s,
+            messages: s.messages.map(m => m.id === botMsgId ? {
+              ...m,
+              content: contentText,
+              status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
+            } : m)
+          } : s));
+        },
+        // onError: 错误处理
+        (error: string) => {
+          console.error("Agent stream error:", error);
+          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+            ...s,
+            messages: s.messages.map(m => m.id === botMsgId ? {
+              ...m,
+              content: contentText + (settings.language === 'zh' 
+                ? `\n\n❌ 分析出错: ${error}` 
+                : `\n\n❌ Analysis error: ${error}`),
+              status: 'error' as const,
+              error: error
+            } : m)
+          } : s));
+          setIsStreaming(false);
+          setIsProcessing(false);
+          setStreamController(null);
+        },
+        // onComplete: 完成
+        () => {
+          // 改进的完成逻辑：基于标志位判断
+          if (!hasReceivedText && !hasReceivedToolCall && !hasReceivedToolResult) {
+            // 完全没有收到任何内容，说明可能有错误
+            contentText = settings.language === 'zh' 
+              ? '❌ 分析完成，但未收到响应内容。' 
+              : '❌ Analysis completed, but no response content received.';
+          } else if (!hasReceivedText && hasReceivedToolResult) {
+            // 收到了工具调用和执行结果，但没有收到文本回答
+            // 检查contentText是否为空或只有初始提示
+            if (!contentText || contentText === initialContent || contentText.trim() === '') {
+              // 工具已执行但没有最终回答，添加提示
+              const toolHint = settings.language === 'zh'
+                ? '\n\n✅ 分析已完成。工具执行成功，但未生成文本回答。'
+                : '\n\n✅ Analysis completed. Tools executed successfully, but no text response was generated.';
+              contentText = (contentText === initialContent ? '' : contentText) + toolHint;
+            }
+          } else if (contentText === initialContent) {
+            // 仍然是最初的提示，但有内容，替换掉
+            // 这种情况理论上不应该发生，但作为兜底处理
+            if (hasReceivedText) {
+              // 如果确实收到过文本，不应该还是initialContent，但为了安全起见
+              contentText = settings.language === 'zh' 
+                ? '✅ 分析完成。' 
+                : '✅ Analysis completed.';
+            }
+          } else {
+            // 检查最终内容是否有图标，如果没有则添加
+            const hasIcon = /^[🔧📊✅❌💡📝🤔]/.test(contentText.trim());
+            if (!hasIcon && contentText.trim() && contentText !== initialContent) {
+              const iconPrefix = settings.language === 'zh' 
+                ? '💡 ' 
+                : '💡 ';
+              contentText = iconPrefix + contentText;
+            }
+          }
+          
+          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+            ...s,
+            messages: s.messages.map(m => m.id === botMsgId ? {
+              ...m,
+              content: contentText,
+              status: 'executed' as const
+            } : m)
+          } : s));
+          setIsStreaming(false);
+          setIsProcessing(false);
+          setStreamController(null);
+        },
+        // signal: 中断信号
+        controller.signal
       );
 
-      const botMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        content: response.text,
-        sqlQuery: response.sql,
-        status: response.sql ? 'pending_approval' : 'error', // If valid SQL, wait for approval
-        error: response.error,
-        timestamp: Date.now()
-      };
+      // 保存停止函数以便用户中断
+      setStreamController(controller);
 
-      setSessions(prev => prev.map(s => s.id === currentSessionId ? { 
-        ...s, 
-        messages: [...updatedMessages, botMsg]
+    } catch (error: any) {
+      console.error("Agent analysis error:", error);
+      setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+        ...s,
+        messages: s.messages.map(m => m.id === botMsgId ? {
+          ...m,
+          content: settings.language === 'zh' 
+            ? `分析失败: ${error.message || error}` 
+            : `Analysis failed: ${error.message || error}`,
+          status: 'error' as const,
+          error: error.message || String(error)
+        } : m)
       } : s));
-
-    } catch (error) {
-      console.error(error);
-    } finally {
+      setIsStreaming(false);
       setIsProcessing(false);
+      setStreamController(null);
     }
   };
 
-  // 2. STEP TWO: Execute Confirmed SQL
-  const handleExecuteSql = async (messageId: string, sql: string) => {
-    // Update status to 'executing'
-    setSessions(prev => prev.map(s => {
-        if (s.id !== currentSessionId) return s;
-        return {
-            ...s,
-            messages: s.messages.map(m => m.id === messageId ? { ...m, status: 'executing' } : m)
-        };
-    }));
-
-    try {
-        // Find user question for context
-        const session = sessions.find(s => s.id === currentSessionId);
-        const userMsg = session?.messages[session.messages.length - 2]; // Assumption: User msg is right before
-        const context = userMsg ? userMsg.content : "Execute SQL";
-
-        const response = await executeSqlDraft(sql, context, settings);
-
-        setSessions(prev => prev.map(s => {
-            if (s.id !== currentSessionId) return s;
-            return {
-                ...s,
-                messages: s.messages.map(m => m.id === messageId ? { 
-                    ...m, 
-                    status: response.error ? 'error' : 'executed',
-                    content: response.text, // Update explanation with actual analysis
-                    executionResult: response.result,
-                    error: response.error
-                } : m)
-            };
-        }));
-
-    } catch (error) {
-        setSessions(prev => prev.map(s => {
-            if (s.id !== currentSessionId) return s;
-            return {
-                ...s,
-                messages: s.messages.map(m => m.id === messageId ? { ...m, status: 'error', error: "Frontend Execution Error" } : m)
-            };
-        }));
-    }
-  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -223,27 +550,102 @@ function App() {
         };
         setSettings(newSettings);
 
-        let summaryText = "";
-        try {
-           summaryText = await api.getDbSummary(result.id, settings.customApiKey, settings.customBaseUrl, settings.model);
-        } catch (sumErr) {
-           console.error("Summary failed", sumErr);
-           summaryText = settings.language === 'zh' 
-             ? "文件上传成功。请提问以开始分析。" 
-             : "File uploaded. Ask questions to analyze.";
+        // 停止之前的流式请求（如果有）
+        if (streamController) {
+          streamController.abort();
         }
 
-        const botMsg: Message = {
-          id: Date.now().toString(),
+        // 移除之前的summary消息（如果存在），避免重复
+        setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+          ...s,
+          messages: s.messages.filter(m => m.id !== currentSessionId + '_summary')
+        } : s));
+
+        // 创建中断控制器
+        const controller = new AbortController();
+        setStreamController(controller);
+        setIsStreaming(true);
+
+        // 创建初始摘要消息（先创建，再开始流式更新）
+        const summaryMessageId = currentSessionId + '_summary';
+        const summaryMessage: Message = {
+          id: summaryMessageId,
           role: 'model',
-          content: summaryText,
+          content: "",  // 初始为空，通过流式更新
           timestamp: Date.now()
         };
 
-        setSessions(prev => prev.map(s => s.id === currentSessionId ? { 
-          ...s, 
-          messages: [...s.messages, botMsg] 
+        // 先添加消息到列表
+        setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+          ...s,
+          messages: [...s.messages, summaryMessage]
         } : s));
+
+        let summaryText = "";
+        let hasError = false;
+
+        try {
+          // 流式获取摘要
+          const stopStream = api.getDbSummaryStream(
+            result.id,
+            settings.customApiKey,
+            settings.customBaseUrl,
+            settings.model,
+            // 实时接收chunk - 打字机效果
+            (chunk: string) => {
+              summaryText += chunk;
+              // 实时更新UI
+              setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === summaryMessageId ?
+                    { ...m, content: summaryText } : m
+                )
+              } : s));
+            },
+            // 错误处理
+            (error: string) => {
+              console.error("Summary stream error:", error);
+              hasError = true;
+              summaryText = settings.language === 'zh'
+                ? `摘要生成失败: ${error}`
+                : `Summary generation failed: ${error}`;
+              // 更新消息内容
+              setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === summaryMessageId ?
+                    { ...m, content: summaryText } : m
+                )
+              } : s));
+              setIsStreaming(false);
+              setStreamController(null);
+            },
+            // 完成处理
+            () => {
+              setIsStreaming(false);
+              setStreamController(null);
+            },
+            // 中断信号
+            controller.signal
+          );
+        } catch (sumErr) {
+          console.error("Summary failed", sumErr);
+          hasError = true;
+          summaryText = settings.language === 'zh'
+            ? "文件上传成功。请提问以开始分析。"
+            : "File uploaded. Ask questions to analyze.";
+          // 更新消息内容
+          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+            ...s,
+            messages: s.messages.map(m =>
+              m.id === summaryMessageId ?
+                { ...m, content: summaryText } : m
+            )
+          } : s));
+          setIsStreaming(false);
+          setStreamController(null);
+        }
         
         if (currentSession.messages.length === 0) {
            setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: file.name } : s));
@@ -349,14 +751,29 @@ function App() {
             </button>
             <div className="flex items-center gap-2 bg-[#2a2b2d] rounded-lg px-3 py-1.5 border border-transparent focus-within:border-accent transition-colors">
               <Bot size={16} className="text-subtext" />
-              <input 
-                type="text"
+              <select
                 value={settings.model}
                 onChange={(e) => setSettings(s => ({...s, model: e.target.value}))}
-                className="bg-transparent text-sm text-text font-medium outline-none w-36 placeholder-subtext/50"
-                placeholder="Model Name"
-                title="Input Model Name (e.g. gemini-2.5-flash, gpt-4o)"
-              />
+                className="bg-[#2a2b2d] text-sm text-text font-medium outline-none cursor-pointer border-none rounded-md px-1 py-0.5 focus:ring-0 focus:outline-none appearance-none"
+                title="选择AI模型"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 2px center',
+                  backgroundSize: '16px',
+                  paddingRight: '24px'
+                }}
+              >
+                {AVAILABLE_MODELS.map((model) => (
+                  <option
+                    key={model.value}
+                    value={model.value}
+                    className="bg-[#2a2b2d] text-text hover:bg-[#353638]"
+                  >
+                    {model.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           
@@ -370,6 +787,30 @@ function App() {
 
         {/* Chat Area */}
         <div className="flex-1 overflow-y-auto" ref={scrollRef}>
+
+          {/* 流式生成状态指示器 - 只在数据库摘要生成时显示 */}
+          {isStreaming && !settings.dbConfig.fileId && (
+            <div className="flex items-center gap-3 p-4 mx-4 mb-4 bg-[#2a2b2d] rounded-lg border border-accent/30">
+              <div className="w-6 h-6 rounded-full bg-accent flex items-center justify-center">
+                <Loader2 size={14} className="animate-spin text-white" />
+              </div>
+              <div className="flex-1">
+                <div className="text-sm text-text font-medium">
+                  {settings.language === 'zh' ? '正在生成数据库摘要...' : 'Generating database summary...'}
+                </div>
+                <div className="text-xs text-subtext">
+                  {settings.language === 'zh' ? '内容将实时显示' : 'Content will appear in real-time'}
+                </div>
+              </div>
+              <button
+                onClick={stopStreaming}
+                className="px-3 py-1.5 text-xs font-medium text-red-400 hover:text-red-300 bg-red-400/10 hover:bg-red-400/20 rounded-md border border-red-400/20 hover:border-red-400/30 transition-colors"
+              >
+                {settings.language === 'zh' ? '停止生成' : 'Stop'}
+              </button>
+            </div>
+          )}
+
           {currentSession?.messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center p-8 text-center text-subtext">
               <div className="w-16 h-16 bg-[#2a2b2d] rounded-2xl flex items-center justify-center mb-6 text-accent">
@@ -406,10 +847,12 @@ function App() {
                     key={msg.id} 
                     message={msg} 
                     language={settings.language} 
-                    onExecute={handleExecuteSql} 
                 />
               ))}
-              {isProcessing && (
+              {/* 只在没有模型消息显示思考/执行状态时才显示独立的加载指示器 */}
+              {isProcessing && !currentSession?.messages.some(m => 
+                m.role === 'model' && (m.status === 'thinking' || m.status === 'executing')
+              ) && (
                 <div className="flex gap-4 p-6 bg-[#1E1F20]/50">
                   <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-cyan-400 flex items-center justify-center shrink-0">
                     <Loader2 size={18} className="animate-spin text-white" />
