@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Bot, User, Database, Terminal, BarChart3, Play, Loader2, AlertTriangle, Copy, Check } from 'lucide-react';
+import { Bot, User, Database, Terminal, Loader2, AlertTriangle, Copy, Check } from 'lucide-react';
 import { Message } from '../types';
 import DataVisualizer from './DataVisualizer';
 import { translations } from '../i18n';
@@ -10,10 +10,9 @@ import { translations } from '../i18n';
 interface Props {
   message: Message;
   language: 'en' | 'zh';
-  onExecute?: (messageId: string, sql: string) => void;
 }
 
-const MessageBubble: React.FC<Props> = ({ message, language, onExecute }) => {
+const MessageBubble: React.FC<Props> = ({ message, language }) => {
   const isUser = message.role === 'user';
   const t = translations[language];
   const [copied, setCopied] = useState(false);
@@ -30,6 +29,26 @@ const MessageBubble: React.FC<Props> = ({ message, language, onExecute }) => {
     }
   };
 
+  // 自定义图片组件：隐藏无法加载的图片
+  const ImageComponent = ({ src, alt, ...props }: any) => {
+    const [imageError, setImageError] = useState(false);
+    
+    // 如果图片加载失败，不显示任何内容
+    if (imageError) {
+      return null;
+    }
+    
+    return (
+      <img
+        {...props}
+        src={src}
+        alt={alt}
+        onError={() => setImageError(true)}
+        style={{ display: imageError ? 'none' : 'block' }}
+      />
+    );
+  };
+
   return (
     <div className={`flex gap-4 p-6 ${isUser ? 'bg-transparent' : 'bg-[#1E1F20]/50'} rounded-none transition-colors`}>
       <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isUser ? 'bg-secondary text-white' : 'bg-gradient-to-tr from-blue-500 to-cyan-400 text-white'}`}>
@@ -39,7 +58,13 @@ const MessageBubble: React.FC<Props> = ({ message, language, onExecute }) => {
       <div className="flex-1 overflow-hidden space-y-4">
         {/* Main Text Content */}
         <div className="prose prose-invert prose-sm max-w-none text-text">
-          <ReactMarkdown>{message.content}</ReactMarkdown>
+          <ReactMarkdown
+            components={{
+              img: ImageComponent,
+            }}
+          >
+            {message.content}
+          </ReactMarkdown>
         </div>
 
         {/* SQL Block (Always shown if available) */}
@@ -62,19 +87,7 @@ const MessageBubble: React.FC<Props> = ({ message, language, onExecute }) => {
               <code>{message.sqlQuery}</code>
             </pre>
             
-            {/* HUMAN IN THE LOOP ACTIONS */}
-            {isPending && (
-                <div className="absolute bottom-4 right-4 flex gap-2 opacity-100 transition-opacity">
-                    <button 
-                        onClick={() => onExecute && onExecute(message.id, message.sqlQuery!)}
-                        className="flex items-center gap-2 px-4 py-2 bg-accent hover:bg-blue-500 text-white text-xs font-bold rounded-lg shadow-lg shadow-blue-900/50 transition-all hover:scale-105 active:scale-95"
-                    >
-                        <Play size={14} fill="currentColor" />
-                        {t.runQuery}
-                    </button>
-                </div>
-            )}
-            
+            {/* 执行状态显示 */}
             {isExecuting && (
                 <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px] flex items-center justify-center">
                     <div className="flex items-center gap-2 text-accent font-medium text-sm bg-[#1E1F20] px-4 py-2 rounded-full border border-secondary shadow-xl">
@@ -97,11 +110,11 @@ const MessageBubble: React.FC<Props> = ({ message, language, onExecute }) => {
             </div>
         )}
 
-        {/* Status: Waiting for approval hint */}
-        {isPending && (
-            <div className="flex items-center gap-2 text-xs text-yellow-500/80 bg-yellow-500/5 px-3 py-2 rounded-lg border border-yellow-500/10 animate-pulse">
-                <AlertTriangle size={12} />
-                {t.waitingApproval}
+        {/* 思考状态提示 - 只在内容为空且状态为thinking时显示（避免与初始思考内容重复） */}
+        {message.status === 'thinking' && !message.content && (
+            <div className="flex items-center gap-2 text-xs text-blue-400/80 bg-blue-500/5 px-3 py-2 rounded-lg border border-blue-500/10 mt-2">
+                <Loader2 size={12} className="animate-spin" />
+                {language === 'zh' ? '正在思考中...' : 'Thinking...'}
             </div>
         )}
 
