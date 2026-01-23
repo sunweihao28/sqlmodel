@@ -60,6 +60,8 @@ export interface Session {
   title: string;
   messages: Message[];
   updatedAt: number;
+  fileId?: number; // Added: 关联的文件ID
+  backendId?: string; // Added: 关联的后端真实会话ID (当 id='1' 时使用)
 }
 
 export interface DbConfig {
@@ -86,8 +88,10 @@ export interface AppSettings {
 
 // 可用的模型选项
 export const AVAILABLE_MODELS = [
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', provider: 'Google' },
-  { value: 'gpt-4o', label: 'GPT-4o', provider: 'OpenAI' }
+  { value: 'gpt-4o', label: 'GPT-4o', provider: 'OpenAI' },
+  { value: 'gpt-5.2', label: 'GPT-5.2', provider: 'OpenAI' },
+  { value: 'gemini-3-flash-preview', label: 'gemini-3-flash-preview', provider: 'Google' },
+  { value: 'deepseek-v3.2', label: 'DeepSeek V3.2', provider: 'DeepSeek' }
 ] as const;
 
 export type ModelOption = typeof AVAILABLE_MODELS[number];

@@ -1,5 +1,5 @@
 
-import { User, SqlResult, Message } from '../types';
+import { User, Session, Message } from '../types';
 
 // Points to your local FastAPI backend
 export const API_URL = 'http://localhost:8000/api';
@@ -128,6 +128,67 @@ export const api = {
     }
   },
 
+// --- [修改] Session Management (持久化历史相关接口) ---
+
+  // 获取会话列表
+  getSessions: async (): Promise<Session[]> => {
+    try {
+        const response = await fetch(`${API_URL}/chat/sessions`, {
+          headers: getHeaders()
+        });
+        if (!response.ok) throw new Error('Failed to fetch sessions');
+        return await response.json();
+    } catch (error) {
+        handleApiError(error, "Get Sessions");
+        throw error;
+    }
+  },
+
+  // 创建新会话
+  createSession: async (fileId: number, title: string): Promise<Session> => {
+    try {
+        const response = await fetch(`${API_URL}/chat/sessions`, {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({ file_id: fileId, title })
+        });
+        if (!response.ok) throw new Error('Failed to create session');
+        return await response.json();
+    } catch (error) {
+        handleApiError(error, "Create Session");
+        throw error;
+    }
+  },
+
+  // [新增] 删除会话
+  deleteSession: async (sessionId: string) => {
+    try {
+        const response = await fetch(`${API_URL}/chat/sessions/${sessionId}`, {
+          method: 'DELETE',
+          headers: getHeaders()
+        });
+        if (!response.ok) throw new Error('Failed to delete session');
+        return await response.json();
+    } catch (error) {
+        handleApiError(error, "Delete Session");
+        throw error;
+    }
+  },
+
+  // 获取会话历史记录
+  getSessionMessages: async (sessionId: string): Promise<Message[]> => {
+    try {
+        const response = await fetch(`${API_URL}/chat/sessions/${sessionId}/messages`, {
+          headers: getHeaders()
+        });
+        if (!response.ok) throw new Error('Failed to fetch messages');
+        return await response.json();
+    } catch (error) {
+        handleApiError(error, "Get Messages");
+        throw error;
+    }
+  },
+
   // Get Summary
   getDbSummary: async (fileId: number, apiKey?: string, baseUrl?: string, model?: string): Promise<string> => {
     try {
@@ -226,7 +287,8 @@ export const api = {
     onChunk?: (chunk: string) => void,
     onError?: (error: string) => void,
     onComplete?: () => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    sessionId?: string // [Added] Optional session ID to save summary
   ): (() => void) => {
     const controller = signal instanceof AbortController ? signal : new AbortController();
 
@@ -241,6 +303,7 @@ export const api = {
         api_key: apiKey || null,
         base_url: baseUrl || null,
         model: model || null,
+        session_id: sessionId || null // Pass session ID
       }),
       signal: controller.signal,
     })
@@ -298,6 +361,7 @@ export const api = {
   // Agent流式分析 (Agent Analysis with Streaming)
   agentAnalyzeStream: (
     message: string,
+    sessionId: string,
     fileId: number,
     history: Message[],
     apiKey?: string,
@@ -321,6 +385,7 @@ export const api = {
       },
       body: JSON.stringify({
         message,
+        session_id: sessionId,
         file_id: fileId,
         history: history.map(m => ({ role: m.role, content: m.content })),
         api_key: apiKey || null,
