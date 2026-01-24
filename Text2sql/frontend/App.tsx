@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Settings, Plus, MessageSquare, Send, Upload, LayoutGrid, 
   Database, Loader2, Menu, Sparkles, LogOut, User as UserIcon,
-  Bot
+  Bot, Trash2
 } from 'lucide-react';
 import { generateSessionTitle } from './services/geminiService';
 import SettingsModal from './components/SettingsModal';
@@ -71,6 +71,7 @@ function App() {
   const t = translations[settings.language];
 
   // --- App State ---
+  // 默认总是包含一个 ID='1' 的新建分析会话
   const [sessions, setSessions] = useState<Session[]>([{
     id: '1', title: translations[settings.language].newAnalysis, messages: [], updatedAt: Date.now()
   }]);
@@ -86,7 +87,96 @@ function App() {
   const [streamController, setStreamController] = useState<AbortController | null>(null);
   
   const scrollRef = useRef<HTMLDivElement>(null);
-  const currentSession = sessions.find(s => s.id === currentSessionId)!;
+  // 安全获取 currentSession，防止 id 对应不上的情况
+  const currentSession = sessions.find(s => s.id === currentSessionId) || sessions[0];
+
+  // --- Helpers for Backend Sync (新增) ---
+  const loadSessions = async () => {
+    try {
+      const remoteSessions = await api.getSessions();
+      // 后端返回的是 {id, title, updatedAt, fileId}
+      // 我们将其转换为前端格式，messages 初始化为空数组
+      const formattedRemoteSessions: Session[] = remoteSessions.map((s: any) => ({
+        id: s.id,
+        title: s.title,
+        updatedAt: s.updatedAt,
+        fileId: s.fileId, // 获取后端返回的 fileId
+        messages: [] // 内容稍后按需加载
+      }));
+      
+      // [关键修改] 始终构造：[新建分析(ID=1), ...远程会话]
+      const placeholderSession: Session = {
+        id: '1', 
+        title: t.newAnalysis, 
+        messages: [], 
+        updatedAt: Date.now()
+      };
+
+      // 合并列表：本地占位符 + 远程历史
+      setSessions([placeholderSession, ...formattedRemoteSessions]);
+      
+      // [关键修改] 登录/加载后，强制选中“新建分析”，进入初始界面
+      setCurrentSessionId('1');
+      
+      // 同时清除当前设置中可能残留的 fileId，确保是干净的初始状态
+      setSettings(prev => ({
+        ...prev,
+        dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '' }
+      }));
+
+    } catch (e) {
+      console.error("Failed to load sessions:", e);
+      // 出错时至少保证有一个本地会话
+      setSessions([{
+        id: '1', title: t.newAnalysis, messages: [], updatedAt: Date.now()
+      }]);
+      setCurrentSessionId('1');
+    }
+  };
+
+  const loadSessionMessages = async (sessionId: string) => {
+    if (sessionId === '1') return; // 忽略默认的本地ID
+    setIsProcessing(true);
+    try {
+      const msgs = await api.getSessionMessages(sessionId);
+      
+      // [Fix Content Restoration]
+      // 恢复 SQL 查询和可视化配置 (Hydration)
+      const hydratedMsgs = msgs.map((msg: any) => {
+          let sqlQuery = undefined;
+          let executionResult = undefined;
+
+          // 1. 恢复 SQL 查询 (从 steps 中寻找 sql_inter)
+          if (msg.steps && Array.isArray(msg.steps)) {
+              const sqlStep = msg.steps.find((s: any) => s.tool === 'sql_inter');
+              if (sqlStep && sqlStep.input) {
+                  sqlQuery = sqlStep.input;
+              }
+          }
+
+          // 2. 恢复可视化配置 (从 vizConfig)
+          if (msg.vizConfig) {
+              executionResult = {
+                  columns: msg.vizConfig.data && msg.vizConfig.data.length > 0 ? Object.keys(msg.vizConfig.data[0]) : [],
+                  data: msg.vizConfig.data || [],
+                  chartTypeSuggestion: msg.vizConfig.type,
+                  summary: msg.vizConfig.title || 'Visualization',
+                  visualizationConfig: msg.vizConfig,
+                  displayType: msg.vizConfig.displayType || 'both'
+              };
+          }
+
+          return { ...msg, sqlQuery, executionResult };
+      });
+
+      // 将拉取到的消息更新到对应的 session 对象中
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: hydratedMsgs } : s));
+    } catch (e) {
+      console.error("Failed to load messages:", e);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   // --- Effects ---
   useEffect(() => {
@@ -98,6 +188,10 @@ function App() {
   // 在应用启动时验证token有效性
   useEffect(() => {
     const validateTokenOnLoad = async () => {
+      if (user) {
+        loadSessions();
+      }
+
       if (!user) return;
 
       try {
@@ -113,9 +207,11 @@ function App() {
           console.warn('Token validation failed on app load, clearing user session');
           localStorage.removeItem('current_user');
           setUser(null);
+          // 重置为初始状态
           setSessions([{
             id: '1', title: t.newAnalysis, messages: [], updatedAt: Date.now()
           }]);
+          setCurrentSessionId('1');
         }
       } catch (error) {
         // 如果无法连接服务器，暂时保留用户状态
@@ -124,7 +220,32 @@ function App() {
     };
 
     validateTokenOnLoad();
-  }, []); // 只在应用启动时执行一次
+  }, [user]); // 只在应用启动时执行一次
+
+  // [修改] 2. 切换会话时加载历史消息
+  useEffect(() => {
+    // 只有当切换到非 '1' 的会话时才加载历史
+    if (currentSessionId && currentSessionId !== '1') {
+        // 检查当前会话是否已经有消息（简单的缓存策略，防止重复加载）
+        const session = sessions.find(s => s.id === currentSessionId);
+        if (session && session.messages.length === 0) {
+            loadSessionMessages(currentSessionId);
+        }
+        // 如果该会话关联了文件，同步更新设置里的 fileId
+        if (session && session.fileId) {
+            setSettings(prev => ({
+                ...prev,
+                dbConfig: { ...prev.dbConfig, fileId: session.fileId }
+            }));
+        }
+    } else if (currentSessionId === '1') {
+        // 切换回“新建分析”时，清空当前的文件设置
+        setSettings(prev => ({
+            ...prev,
+            dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '' }
+        }));
+    }
+  }, [currentSessionId]);
 
   // --- Auth Handlers ---
   const handleLogin = (newUser: User) => {
@@ -137,13 +258,44 @@ function App() {
     console.log('User logged out');
     setUser(null);
     localStorage.removeItem('current_user');
+    // 重置状态
     setSessions([{
         id: '1', title: t.newAnalysis, messages: [], updatedAt: Date.now()
     }]);
+    setCurrentSessionId('1');
+    setSettings(prev => ({
+        ...prev,
+        dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '' }
+    }));
   };
 
   const handleLanguageChange = (lang: 'en' | 'zh') => {
       setSettings(prev => ({...prev, language: lang}));
+  };
+
+  // [新增] 删除会话
+  const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // 阻止冒泡，避免触发切换会话
+    
+    // 不允许删除默认的“新建分析”入口
+    if (sessionId === '1') return;
+
+    if (!window.confirm(settings.language === 'zh' ? '确定要删除此会话吗？' : 'Delete this session?')) return;
+
+    // 如果删除的是当前会话，自动切换回“新建分析”
+    if (sessionId === currentSessionId) {
+        setCurrentSessionId('1');
+    }
+
+    // 乐观更新 UI
+    setSessions(prev => prev.filter(s => s.id !== sessionId));
+
+    // 调用后端 API
+    try {
+        await api.deleteSession(sessionId);
+    } catch (error) {
+        console.error("Failed to delete session:", error);
+    }
   };
 
   // 中断流式生成（支持摘要和Agent分析）
@@ -172,16 +324,11 @@ function App() {
     }
   };
 
-  // --- Logic Handlers ---
-  const handleNewSession = () => {
-    const newId = Date.now().toString();
-    setSessions(prev => [{
-      id: newId,
-      title: t.newAnalysis,
-      messages: [],
-      updatedAt: Date.now()
-    }, ...prev]);
-    setCurrentSessionId(newId);
+  const handleNewSession = async () => {
+    // 点击“新建分析”按钮
+    // 逻辑：直接切换到 ID='1' 的会话。
+    // useEffect 会负责清空 settings，确保这是一个干净的状态。
+    setCurrentSessionId('1');
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
 
@@ -212,7 +359,10 @@ function App() {
 
     if (isFirstMessage) {
       generateSessionTitle(userMsg.content, settings.language).then(newTitle => {
-        setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: newTitle } : s));
+        // 更新当前真实会话的标题
+        if (currentSessionId !== '1') {
+             setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: newTitle } : s));
+        }
       });
     }
 
@@ -254,8 +404,10 @@ function App() {
 
     try {
       // 使用流式Agent分析
+      // 注意：这里我们使用 currentSessionId，因为在上传文件时我们已经切换到了真实的 ID
       const stopStream = api.agentAnalyzeStream(
         userMsg.content,
+        currentSessionId, 
         settings.dbConfig.fileId!,
         currentSession.messages,
         settings.customApiKey,
@@ -537,6 +689,43 @@ function App() {
     try {
         const result = await api.uploadFile(file);
         
+        // [新增] 1. 上传成功后，在后端创建一个新会话
+        const sessionMeta = await api.createSession(result.id, file.name);
+        
+        // [关键逻辑重构]
+        // 之前：我们只是把 backendId 绑到 ID='1' 上，导致列表过滤器(s.id !== '1')把它过滤掉了。
+        // 现在：
+        // 1. 我们构造一个新的真实会话对象 (Real Session)，ID 使用后端返回的 UUID。
+        // 2. 我们构造一个新的空白占位会话 (Placeholder)，ID = '1'。
+        // 3. 我们把这个真实会话插入到列表第二位（在占位符之后）。
+        // 4. 我们立即切换到真实会话的 ID。
+        
+        const newRealSession: Session = {
+            id: sessionMeta.id, // 使用真实后端ID
+            title: file.name,
+            messages: [], // 初始为空，稍后会添加摘要消息
+            updatedAt: Date.now(),
+            fileId: result.id
+        };
+
+        const freshPlaceholder: Session = {
+            id: '1', 
+            title: t.newAnalysis, 
+            messages: [], 
+            updatedAt: Date.now()
+        };
+
+        setSessions(prev => {
+            // 过滤掉旧的 ID='1' (它是旧的草稿)，保留其他历史会话
+            const otherSessions = prev.filter(s => s.id !== '1');
+            // 构造新列表：[新占位符, 新真实会话, ...旧历史]
+            return [freshPlaceholder, newRealSession, ...otherSessions];
+        });
+
+        // 立即切换到新的真实会话
+        setCurrentSessionId(newRealSession.id);
+
+        // 更新设置
         const newSettings = {
           ...settings,
           useSimulationMode: false,
@@ -550,33 +739,27 @@ function App() {
         };
         setSettings(newSettings);
 
-        // 停止之前的流式请求（如果有）
+        // 停止之前的流式请求
         if (streamController) {
           streamController.abort();
         }
-
-        // 移除之前的summary消息（如果存在），避免重复
-        setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-          ...s,
-          messages: s.messages.filter(m => m.id !== currentSessionId + '_summary')
-        } : s));
 
         // 创建中断控制器
         const controller = new AbortController();
         setStreamController(controller);
         setIsStreaming(true);
 
-        // 创建初始摘要消息（先创建，再开始流式更新）
-        const summaryMessageId = currentSessionId + '_summary';
+        // 创建初始摘要消息
+        const summaryMessageId = newRealSession.id + '_summary';
         const summaryMessage: Message = {
           id: summaryMessageId,
           role: 'model',
-          content: "",  // 初始为空，通过流式更新
+          content: "",  
           timestamp: Date.now()
         };
 
-        // 先添加消息到列表
-        setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+        // 添加消息到新的真实会话
+        setSessions(prev => prev.map(s => s.id === newRealSession.id ? {
           ...s,
           messages: [...s.messages, summaryMessage]
         } : s));
@@ -585,17 +768,17 @@ function App() {
         let hasError = false;
 
         try {
-          // 流式获取摘要
+          // 流式获取摘要 [Updated] 传递真实 Session ID
           const stopStream = api.getDbSummaryStream(
             result.id,
             settings.customApiKey,
             settings.customBaseUrl,
             settings.model,
-            // 实时接收chunk - 打字机效果
+            // 实时接收chunk
             (chunk: string) => {
               summaryText += chunk;
-              // 实时更新UI
-              setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+              // 实时更新UI (目标是 newRealSession.id)
+              setSessions(prev => prev.map(s => s.id === newRealSession.id ? {
                 ...s,
                 messages: s.messages.map(m =>
                   m.id === summaryMessageId ?
@@ -610,8 +793,7 @@ function App() {
               summaryText = settings.language === 'zh'
                 ? `摘要生成失败: ${error}`
                 : `Summary generation failed: ${error}`;
-              // 更新消息内容
-              setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+              setSessions(prev => prev.map(s => s.id === newRealSession.id ? {
                 ...s,
                 messages: s.messages.map(m =>
                   m.id === summaryMessageId ?
@@ -627,7 +809,8 @@ function App() {
               setStreamController(null);
             },
             // 中断信号
-            controller.signal
+            controller.signal,
+            newRealSession.id // Pass the backend real session ID
           );
         } catch (sumErr) {
           console.error("Summary failed", sumErr);
@@ -635,8 +818,7 @@ function App() {
           summaryText = settings.language === 'zh'
             ? "文件上传成功。请提问以开始分析。"
             : "File uploaded. Ask questions to analyze.";
-          // 更新消息内容
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+          setSessions(prev => prev.map(s => s.id === newRealSession.id ? {
             ...s,
             messages: s.messages.map(m =>
               m.id === summaryMessageId ?
@@ -645,10 +827,6 @@ function App() {
           } : s));
           setIsStreaming(false);
           setStreamController(null);
-        }
-        
-        if (currentSession.messages.length === 0) {
-           setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: file.name } : s));
         }
 
     } catch (error: any) {
@@ -685,7 +863,11 @@ function App() {
         <div className="p-3 min-w-64">
           <button 
             onClick={handleNewSession}
-            className="w-full flex items-center gap-2 px-4 py-3 bg-[#2a2b2d] hover:bg-[#353638] rounded-full text-sm font-medium transition-colors text-primary"
+            className={`w-full flex items-center gap-2 px-4 py-3 rounded-full text-sm font-medium transition-colors ${
+                currentSessionId === '1'
+                  ? 'bg-accent text-white hover:bg-blue-600'
+                  : 'bg-[#2a2b2d] text-primary hover:bg-[#353638]'
+            }`}
           >
             <Plus size={18} /> {t.newAnalysis}
           </button>
@@ -693,19 +875,34 @@ function App() {
 
         <div className="flex-1 overflow-y-auto p-3 space-y-1 min-w-64">
           <div className="text-xs font-medium text-subtext px-4 py-2 uppercase tracking-wider">{t.recent}</div>
-          {sessions.map(session => (
-            <button
+          {sessions.filter(s => s.id !== '1').map(session => (
+            <div
               key={session.id}
-              onClick={() => setCurrentSessionId(session.id)}
-              className={`w-full text-left px-4 py-3 rounded-lg text-sm flex items-center gap-3 transition-colors ${
+              className={`group w-full rounded-lg text-sm flex items-center transition-colors relative ${
                 session.id === currentSessionId 
                   ? 'bg-[#004A77] text-white' 
                   : 'text-subtext hover:bg-[#2a2b2d] hover:text-white'
               }`}
             >
-              <MessageSquare size={16} />
-              <span className="truncate">{session.title}</span>
-            </button>
+              <button
+                onClick={() => setCurrentSessionId(session.id)}
+                className="flex-1 flex items-center gap-3 px-4 py-3 text-left overflow-hidden"
+              >
+                <MessageSquare size={16} className="shrink-0" />
+                <span className="truncate">{session.title}</span>
+              </button>
+              
+              {/* 删除按钮 - 仅在 hover 时或移动端显示 */}
+              <button
+                onClick={(e) => handleDeleteSession(session.id, e)}
+                className={`p-2 mr-2 rounded hover:bg-red-500/20 hover:text-red-400 transition-colors ${
+                    session.id === currentSessionId ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                }`}
+                title={settings.language === 'zh' ? "删除会话" : "Delete session"}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
           ))}
         </div>
 
