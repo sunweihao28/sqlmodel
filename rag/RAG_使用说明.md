@@ -13,7 +13,7 @@ pip install langchain langchain-community langchain-text-splitters chromadb open
 ### 1.2 配置环境变量
 在项目根目录下（或 `rag/`）创建 `.env` 文件，添加：
 ```
-DASHSCOPE_API_KEY='sk-29e724dbecc44ac39f8932e356d4ea16'
+DASHSCOPE_API_KEY=YOUR_DASHSCOPE_API_KEY
 ```
 
 模块会使用 `DASHSCOPE_API_KEY` 调用 DashScope 的 `text-embedding-v2` 进行向量化。
