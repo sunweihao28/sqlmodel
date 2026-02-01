@@ -2,7 +2,7 @@
 export type Role = 'user' | 'model';
 
 export type ChartType = 'bar' | 'line' | 'pie' | 'table';
-export type DisplayType = 'table' | 'chart' | 'both'; // 显示类型：仅表格、仅图表、两者都显示
+export type DisplayType = 'table' | 'chart' | 'both'; 
 
 export interface VisualizationConfig {
   type: ChartType;  // 图表类型
@@ -28,7 +28,7 @@ export interface User {
   name: string;
   email: string;
   avatar?: string;
-  token?: string; // JWT Token (Mock)
+  token?: string;
 }
 
 export interface SqlResult {
@@ -36,8 +36,8 @@ export interface SqlResult {
   data: any[];
   chartTypeSuggestion: ChartType;
   summary: string;
-  visualizationConfig?: VisualizationConfig; // Python生成的可视化配置
-  displayType?: DisplayType; // 显示类型（默认：'both'，保持向后兼容）
+  visualizationConfig?: VisualizationConfig;
+  displayType?: DisplayType;
 }
 
 export type MessageStatus = 'thinking' | 'pending_approval' | 'executing' | 'executed' | 'error';
@@ -47,8 +47,6 @@ export interface Message {
   role: Role;
   content: string;
   timestamp: number;
-  
-  // Extras for model responses
   status?: MessageStatus;
   sqlQuery?: string;
   executionResult?: SqlResult;
@@ -60,19 +58,19 @@ export interface Session {
   title: string;
   messages: Message[];
   updatedAt: number;
-  fileId?: number; // Added: 关联的文件ID
-  backendId?: string; // Added: 关联的后端真实会话ID (当 id='1' 时使用)
+  fileId?: number;
+  backendId?: string;
 }
 
 export interface DbConfig {
-  type: 'postgres' | 'mysql' | 'sqlite'; // Added sqlite
+  type: 'postgres' | 'mysql' | 'sqlite';
   host: string;
   port: string;
   database: string;
   user: string;
   password: string;
-  uploadedPath?: string; // Name of the file on the server
-  fileId?: number; // Added: The ID of the file in the backend database
+  uploadedPath?: string;
+  fileId?: number;
 }
 
 export interface AppSettings {
@@ -80,10 +78,15 @@ export interface AppSettings {
   model: string;
   customBaseUrl?: string;
   customApiKey?: string;
-
-  // Removed backendUrl
   useSimulationMode: boolean;
+  useRag: boolean; // [新增]
   dbConfig: DbConfig;
+}
+
+// [新增] RAG Document
+export interface RagDocument {
+  id: string;
+  name: string;
 }
 
 // 可用的模型选项

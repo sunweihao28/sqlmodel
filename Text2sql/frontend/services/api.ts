@@ -1,7 +1,6 @@
 
-import { User, Session, Message } from '../types';
+import { User, Session, Message, RagDocument } from '../types';
 
-// Points to your local FastAPI backend
 export const API_URL = 'http://localhost:8000/api';
 
 const getHeaders = (): Record<string, string> => {
@@ -128,9 +127,72 @@ export const api = {
     }
   },
 
-// --- [修改] Session Management (持久化历史相关接口) ---
+  // --- RAG APIs (新增) ---
+  
+  // 上传知识库文档
+  // [修改] 接受 apiKey 和 baseUrl 参数
+  uploadRagDocument: async (file: File, apiKey?: string, baseUrl?: string) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (apiKey) formData.append('api_key', apiKey);
+    if (baseUrl) formData.append('base_url', baseUrl);
 
-  // 获取会话列表
+    const userStr = localStorage.getItem('current_user');
+    const headers: Record<string, string> = {};
+    if (userStr) {
+        const user = JSON.parse(userStr);
+        headers['Authorization'] = `Bearer ${user.token}`;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/rag/upload`, {
+        method: 'POST',
+        headers: headers,
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: "Upload failed" }));
+        throw new Error(err.detail || 'Upload failed');
+      }
+      return await response.json();
+    } catch (error) {
+      handleApiError(error, "Upload Doc");
+      throw error;
+    }
+  },
+
+  // 列出知识库文档
+  getRagDocuments: async (): Promise<RagDocument[]> => {
+    try {
+      const response = await fetch(`${API_URL}/rag/documents`, {
+        headers: getHeaders()
+      });
+      if (!response.ok) throw new Error('Failed to fetch documents');
+      return await response.json();
+    } catch (error) {
+      handleApiError(error, "Get Docs");
+      throw error;
+    }
+  },
+
+  // 删除知识库文档
+  deleteRagDocument: async (docId: string) => {
+    try {
+      const response = await fetch(`${API_URL}/rag/documents/${docId}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (!response.ok) throw new Error('Failed to delete document');
+      return await response.json();
+    } catch (error) {
+      handleApiError(error, "Delete Doc");
+      throw error;
+    }
+  },
+
+  // --- Session Management ---
+
   getSessions: async (): Promise<Session[]> => {
     try {
         const response = await fetch(`${API_URL}/chat/sessions`, {
@@ -144,7 +206,6 @@ export const api = {
     }
   },
 
-  // 创建新会话
   createSession: async (fileId: number, title: string): Promise<Session> => {
     try {
         const response = await fetch(`${API_URL}/chat/sessions`, {
@@ -160,7 +221,6 @@ export const api = {
     }
   },
 
-  // [新增] 删除会话
   deleteSession: async (sessionId: string) => {
     try {
         const response = await fetch(`${API_URL}/chat/sessions/${sessionId}`, {
@@ -175,7 +235,6 @@ export const api = {
     }
   },
 
-  // 获取会话历史记录
   getSessionMessages: async (sessionId: string): Promise<Message[]> => {
     try {
         const response = await fetch(`${API_URL}/chat/sessions/${sessionId}/messages`, {
@@ -189,96 +248,77 @@ export const api = {
     }
   },
 
-  // Get Summary
-  getDbSummary: async (fileId: number, apiKey?: string, baseUrl?: string, model?: string): Promise<string> => {
+  // SQL Draft Generation (For Split Architecture)
+  generateSqlDraft: async (
+    query: string,
+    history: Message[],
+    fileId: number,
+    apiKey?: string,
+    baseUrl?: string,
+    model?: string
+  ): Promise<string> => {
     try {
-      const response = await fetch(`${API_URL}/chat/summary`, {
-          method: 'POST',
-          headers: getHeaders(),
-          body: JSON.stringify({
-              file_id: fileId,
-              api_key: apiKey || null,
-              base_url: baseUrl || null,
-              model: model || null
-          })
+      const response = await fetch(`${API_URL}/chat/generate_sql`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          message: query,
+          history: history.map(m => ({ role: m.role, content: m.content })),
+          file_id: fileId,
+          api_key: apiKey || null,
+          base_url: baseUrl || null,
+          model: model || null
+        })
       });
 
       if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.detail || 'Summary generation failed');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to generate SQL');
       }
 
       const data = await response.json();
-      return data.summary;
+      return data.sql;
     } catch (error) {
-      handleApiError(error, "Summary");
+      handleApiError(error, "Generate SQL");
       throw error;
     }
   },
 
-  // STEP 1: Generate SQL Draft (Human-in-the-loop)
-  generateSqlDraft: async (message: string, history: Message[], fileId: number, apiKey?: string, baseUrl?: string, model?: string): Promise<string> => {
-    const formattedHistory = history.slice(-10).map(msg => ({
-        role: msg.role,
-        content: msg.content
-    }));
-
+  // Execute SQL (For Split Architecture)
+  executeSql: async (
+    sql: string,
+    originalMessage: string,
+    fileId: number,
+    apiKey?: string,
+    baseUrl?: string,
+    model?: string
+  ): Promise<any> => {
     try {
-        const response = await fetch(`${API_URL}/chat/generate`, {
-            method: 'POST',
-            headers: getHeaders(),
-            body: JSON.stringify({
-                message,
-                file_id: fileId,
-                history: formattedHistory,
-                api_key: apiKey || null,
-                base_url: baseUrl || null,
-                model: model || null
-            })
-        });
+      const response = await fetch(`${API_URL}/chat/execute_sql`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          sql: sql,
+          message: originalMessage,
+          file_id: fileId,
+          api_key: apiKey || null,
+          base_url: baseUrl || null,
+          model: model || null
+        })
+      });
 
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || 'Generation failed');
-        }
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to execute SQL');
+      }
 
-        const data = await response.json();
-        return data.sql;
+      return await response.json();
     } catch (error) {
-        handleApiError(error, "Generation");
-        throw error;
+      handleApiError(error, "Execute SQL");
+      throw error;
     }
   },
 
-  // STEP 2: Execute SQL
-  executeSql: async (sql: string, originalMessage: string, fileId: number, apiKey?: string, baseUrl?: string, model?: string): Promise<{ answer: string, sql: string, columns: string[], data: any[] }> => {
-    try {
-        const response = await fetch(`${API_URL}/chat/execute`, {
-            method: 'POST',
-            headers: getHeaders(),
-            body: JSON.stringify({
-                sql,
-                message: originalMessage,
-                file_id: fileId,
-                api_key: apiKey || null,
-                base_url: baseUrl || null,
-                model: model || null
-            })
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || 'Execution failed');
-        }
-
-        return await response.json();
-    } catch (error) {
-        handleApiError(error, "Execution");
-        throw error;
-    }
-  },
-
-  // Stream Summary (流式获取摘要)
   getDbSummaryStream: (
     fileId: number,
     apiKey?: string,
@@ -288,7 +328,7 @@ export const api = {
     onError?: (error: string) => void,
     onComplete?: () => void,
     signal?: AbortSignal,
-    sessionId?: string // [Added] Optional session ID to save summary
+    sessionId?: string
   ): (() => void) => {
     const controller = signal instanceof AbortController ? signal : new AbortController();
 
@@ -303,7 +343,7 @@ export const api = {
         api_key: apiKey || null,
         base_url: baseUrl || null,
         model: model || null,
-        session_id: sessionId || null // Pass session ID
+        session_id: sessionId || null
       }),
       signal: controller.signal,
     })
@@ -354,11 +394,9 @@ export const api = {
         onError?.(err?.message || String(err));
       });
 
-    // 返回取消函数
     return () => controller.abort();
   },
 
-  // Agent流式分析 (Agent Analysis with Streaming)
   agentAnalyzeStream: (
     message: string,
     sessionId: string,
@@ -373,7 +411,8 @@ export const api = {
     onToolResult?: (tool: string, result: string, status: string) => void,
     onError?: (error: string) => void,
     onComplete?: () => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    useRag: boolean = false // [新增]
   ): (() => void) => {
     const controller = signal instanceof AbortController ? signal : new AbortController();
 
@@ -391,7 +430,8 @@ export const api = {
         api_key: apiKey || null,
         base_url: baseUrl || null,
         model: model || null,
-        max_tool_rounds: maxToolRounds || 12
+        max_tool_rounds: maxToolRounds || 12,
+        use_rag: useRag // Pass Flag
       }),
       signal: controller.signal,
     })
@@ -451,7 +491,6 @@ export const api = {
           }
           
           if (done) {
-            // 处理剩余的buffer
             if (buffer.trim()) {
               const line = buffer.trim();
               if (line.startsWith('data:')) {
@@ -460,18 +499,8 @@ export const api = {
                   onComplete?.();
                   return;
                 }
-                try {
-                  const event = JSON.parse(payload);
-                  if (event.type === 'done') {
-                    onComplete?.();
-                    return;
-                  }
-                } catch (e) {
-                  // 忽略解析错误
-                }
               }
             }
-            // 如果流结束了但没有收到done事件，也调用onComplete
             onComplete?.();
             break;
           }
@@ -482,24 +511,18 @@ export const api = {
         onError?.(err?.message || String(err));
       });
 
-    // 返回取消函数
     return () => controller.abort();
   },
 };
 
-// 全局错误处理函数
 const handleApiError = (error: any, operation: string) => {
   console.error(`${operation} API Error:`, error);
-
-  // 检查是否是认证错误
   if (error.message && error.message.includes("401")) {
     console.warn("Authentication token expired or invalid, clearing user session");
     localStorage.removeItem('current_user');
-    // 触发页面刷新来重新初始化应用状态
     window.location.reload();
     return;
   }
-
   if (error.message && error.message.includes("Failed to fetch")) {
     throw new Error("Could not connect to backend. Please ensure 'python main.py' is running on port 8000.");
   }
