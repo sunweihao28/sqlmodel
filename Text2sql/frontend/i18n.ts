@@ -1,5 +1,6 @@
 
 
+
 export const translations = {
   en: {
     newAnalysis: "New Analysis",
@@ -59,6 +60,9 @@ export const translations = {
     clearFile: "Clear File",
     // Execution
     runQuery: "Run Query",
+    editQuery: "Edit SQL",
+    rejectQuery: "Reject",
+    confirmRun: "Confirm & Run",
     executing: "Executing SQL...",
     executionError: "Execution Failed",
     waitingApproval: "Review the SQL below before executing."
@@ -121,6 +125,9 @@ export const translations = {
     clearFile: "清除文件",
     // Execution
     runQuery: "运行查询",
+    editQuery: "编辑 SQL",
+    rejectQuery: "拒绝执行",
+    confirmRun: "确认并运行",
     executing: "正在执行 SQL...",
     executionError: "执行失败",
     waitingApproval: "请在执行前检查下方的 SQL 语句。"

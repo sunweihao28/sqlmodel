@@ -13,6 +13,7 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     full_name = Column(String)
+    long_term_memory = Column(Text, nullable=True) # [New] 存储用户画像/长期记忆
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class UploadedFile(Base):
@@ -24,11 +25,28 @@ class UploadedFile(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+class DatabaseConnection(Base):
+    __tablename__ = "database_connections"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    name = Column(String) # Alias name e.g. "Local MySQL"
+    db_type = Column(String) # mysql, postgres
+    host = Column(String)
+    port = Column(String)
+    database_name = Column(String)
+    username = Column(String)
+    password = Column(String) # In production, this should be encrypted
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(Integer, ForeignKey("users.id"))
+    # Can be linked to a file OR a db connection
     file_id = Column(Integer, ForeignKey("uploaded_files.id"), nullable=True)
+    connection_id = Column(Integer, ForeignKey("database_connections.id"), nullable=True)
+    
     title = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -36,6 +54,7 @@ class ChatSession(Base):
     # Relationships
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
     file = relationship("UploadedFile")
+    connection = relationship("DatabaseConnection")
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"

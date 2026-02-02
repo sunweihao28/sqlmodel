@@ -1,8 +1,9 @@
 
-import React from 'react';
-import { X, Save, Database, Server, Key, Globe, Languages, FileCheck, Trash2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { X, Save, Database, Server, Key, Globe, Languages, FileCheck, Trash2, CheckCircle, Loader2 } from 'lucide-react';
 import { AppSettings, DbConfig } from '../types';
 import { translations } from '../i18n';
+import { api } from '../services/api';
 
 interface Props {
   isOpen: boolean;
@@ -14,6 +15,10 @@ interface Props {
 const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) => {
   const [localSettings, setLocalSettings] = React.useState<AppSettings>(settings);
   const [activeTab, setActiveTab] = React.useState<'general' | 'database'>('general');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'none' | 'success' | 'error'>('none');
+  const [connectionMsg, setConnectionMsg] = useState('');
+  
   const t = translations[localSettings.language || 'en'];
 
   if (!isOpen) return null;
@@ -23,13 +28,36 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
       ...prev,
       dbConfig: { ...prev.dbConfig, [key]: value }
     }));
+    setConnectionStatus('none'); // Reset status on edit
   };
 
   const clearUploadedFile = () => {
      setLocalSettings(prev => ({
       ...prev,
-      dbConfig: { ...prev.dbConfig, uploadedPath: '' }
+      dbConfig: { ...prev.dbConfig, uploadedPath: '', fileId: undefined }
     }));
+  };
+
+  const handleTestConnection = async () => {
+    setIsConnecting(true);
+    setConnectionMsg('');
+    setConnectionStatus('none');
+    try {
+        const result = await api.saveDatabaseConnection(localSettings.dbConfig);
+        if (result && result.id) {
+            setConnectionStatus('success');
+            setConnectionMsg(localSettings.language === 'zh' ? '连接成功并已保存！' : 'Connected and saved!');
+            setLocalSettings(prev => ({
+                ...prev,
+                dbConfig: { ...prev.dbConfig, connectionId: result.id, fileId: undefined, uploadedPath: '' }
+            }));
+        }
+    } catch (error: any) {
+        setConnectionStatus('error');
+        setConnectionMsg(error.message);
+    } finally {
+        setIsConnecting(false);
+    }
   };
 
   return (
@@ -96,12 +124,12 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                 <input
                   type="checkbox"
                   id="simMode"
-                  checked={true}
+                  checked={localSettings.useSimulationMode}
                   disabled
                   className="w-4 h-4 rounded border-gray-300 text-accent focus:ring-accent opacity-50"
                 />
                 <label htmlFor="simMode" className="text-sm text-text cursor-default">
-                  <span className="font-semibold block">{t.simMode} (Forced)</span>
+                  <span className="font-semibold block">{t.simMode} (Legacy)</span>
                   <span className="text-subtext">{t.simModeDesc}</span>
                 </label>
               </div>
@@ -145,9 +173,9 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
           ) : (
             <div className="space-y-6">
               
-              {/* Upload File Status */}
+              {/* Upload File Status (SQLite Mode) */}
               {localSettings.dbConfig.uploadedPath && (
-                <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center justify-between">
+                <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center justify-between mb-4">
                     <div className="flex items-center gap-3">
                         <FileCheck className="text-green-400" size={20} />
                         <div>
@@ -165,7 +193,17 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                 </div>
               )}
 
+              {/* Database Connection Config (MySQL/PG) */}
               <div className={`space-y-4 ${localSettings.dbConfig.uploadedPath ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
+                <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-white">Local/Remote DB Connection</label>
+                    {localSettings.dbConfig.connectionId && (
+                        <span className="text-xs bg-green-900 text-green-300 px-2 py-1 rounded-full flex items-center gap-1">
+                            <CheckCircle size={10} /> Active
+                        </span>
+                    )}
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-subtext mb-2">{t.dbType}</label>
@@ -176,6 +214,7 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                     >
                       <option value="postgres">PostgreSQL</option>
                       <option value="mysql">MySQL</option>
+                      <option value="sqlite">SQLite (Use Upload)</option>
                     </select>
                   </div>
                   <div>
@@ -196,7 +235,7 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                       type="text"
                       value={localSettings.dbConfig.port}
                       onChange={(e) => handleDbChange('port', e.target.value)}
-                      placeholder="5432"
+                      placeholder={localSettings.dbConfig.type === 'mysql' ? "3306" : "5432"}
                       className="w-full bg-[#2a2b2d] border border-secondary rounded-lg px-4 py-2 text-text"
                     />
                   </div>
@@ -206,7 +245,7 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                       type="text"
                       value={localSettings.dbConfig.database}
                       onChange={(e) => handleDbChange('database', e.target.value)}
-                      placeholder="my_analytics_db"
+                      placeholder="my_db"
                       className="w-full bg-[#2a2b2d] border border-secondary rounded-lg px-4 py-2 text-text"
                     />
                   </div>
@@ -218,7 +257,7 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                       type="text"
                       value={localSettings.dbConfig.user}
                       onChange={(e) => handleDbChange('user', e.target.value)}
-                      placeholder="postgres"
+                      placeholder="root / postgres"
                       className="w-full bg-[#2a2b2d] border border-secondary rounded-lg px-4 py-2 text-text"
                     />
                   </div>
@@ -233,6 +272,24 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                     />
                   </div>
                 </div>
+
+                {localSettings.dbConfig.type !== 'sqlite' && (
+                    <div className="pt-2">
+                        <button 
+                            onClick={handleTestConnection}
+                            disabled={isConnecting}
+                            className="w-full py-2 bg-blue-600/20 text-blue-300 border border-blue-600/50 rounded-lg hover:bg-blue-600/30 transition-colors flex items-center justify-center gap-2 font-medium text-sm"
+                        >
+                            {isConnecting ? <Loader2 className="animate-spin" size={16} /> : <Server size={16} />}
+                            {localSettings.language === 'zh' ? '测试并保存连接' : 'Test & Save Connection'}
+                        </button>
+                        {connectionMsg && (
+                            <p className={`text-xs mt-2 text-center ${connectionStatus === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                                {connectionMsg}
+                            </p>
+                        )}
+                    </div>
+                )}
               </div>
             </div>
           )}

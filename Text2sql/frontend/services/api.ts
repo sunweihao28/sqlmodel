@@ -1,5 +1,5 @@
 
-import { User, Session, Message, RagDocument } from '../types';
+import { User, Session, Message, RagDocument, DbConfig } from '../types';
 
 export const API_URL = 'http://localhost:8000/api';
 
@@ -127,10 +127,33 @@ export const api = {
     }
   },
 
-  // --- RAG APIs (新增) ---
-  
-  // 上传知识库文档
-  // [修改] 接受 apiKey 和 baseUrl 参数
+  // Connect Database (New)
+  saveDatabaseConnection: async (config: DbConfig) => {
+      try {
+          const response = await fetch(`${API_URL}/db/connect`, {
+              method: 'POST',
+              headers: getHeaders(),
+              body: JSON.stringify({
+                  type: config.type,
+                  host: config.host,
+                  port: config.port,
+                  database: config.database,
+                  user: config.user,
+                  password: config.password
+              })
+          });
+
+          if (!response.ok) {
+              const errorData = await response.json().catch(() => ({}));
+              throw new Error(errorData.detail || 'Connection failed');
+          }
+          return await response.json(); // Returns {id, message}
+      } catch (error) {
+          handleApiError(error, "Connect DB");
+      }
+  },
+
+  // --- RAG APIs ---
   uploadRagDocument: async (file: File, apiKey?: string, baseUrl?: string) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -162,7 +185,6 @@ export const api = {
     }
   },
 
-  // 列出知识库文档
   getRagDocuments: async (): Promise<RagDocument[]> => {
     try {
       const response = await fetch(`${API_URL}/rag/documents`, {
@@ -176,7 +198,6 @@ export const api = {
     }
   },
 
-  // 删除知识库文档
   deleteRagDocument: async (docId: string) => {
     try {
       const response = await fetch(`${API_URL}/rag/documents/${docId}`, {
@@ -206,12 +227,12 @@ export const api = {
     }
   },
 
-  createSession: async (fileId: number, title: string): Promise<Session> => {
+  createSession: async (fileId?: number, title?: string, connectionId?: number): Promise<Session> => {
     try {
         const response = await fetch(`${API_URL}/chat/sessions`, {
           method: 'POST',
           headers: getHeaders(),
-          body: JSON.stringify({ file_id: fileId, title })
+          body: JSON.stringify({ file_id: fileId, connection_id: connectionId, title })
         });
         if (!response.ok) throw new Error('Failed to create session');
         return await response.json();
@@ -248,14 +269,14 @@ export const api = {
     }
   },
 
-  // SQL Draft Generation (For Split Architecture)
   generateSqlDraft: async (
     query: string,
     history: Message[],
-    fileId: number,
+    fileId?: number,
     apiKey?: string,
     baseUrl?: string,
-    model?: string
+    model?: string,
+    connectionId?: number
   ): Promise<string> => {
     try {
       const response = await fetch(`${API_URL}/chat/generate_sql`, {
@@ -265,6 +286,7 @@ export const api = {
           message: query,
           history: history.map(m => ({ role: m.role, content: m.content })),
           file_id: fileId,
+          connection_id: connectionId,
           api_key: apiKey || null,
           base_url: baseUrl || null,
           model: model || null
@@ -284,14 +306,14 @@ export const api = {
     }
   },
 
-  // Execute SQL (For Split Architecture)
   executeSql: async (
     sql: string,
     originalMessage: string,
-    fileId: number,
+    fileId?: number,
     apiKey?: string,
     baseUrl?: string,
-    model?: string
+    model?: string,
+    connectionId?: number
   ): Promise<any> => {
     try {
       const response = await fetch(`${API_URL}/chat/execute_sql`, {
@@ -301,6 +323,7 @@ export const api = {
           sql: sql,
           message: originalMessage,
           file_id: fileId,
+          connection_id: connectionId,
           api_key: apiKey || null,
           base_url: baseUrl || null,
           model: model || null
@@ -320,7 +343,7 @@ export const api = {
   },
 
   getDbSummaryStream: (
-    fileId: number,
+    fileId?: number,
     apiKey?: string,
     baseUrl?: string,
     model?: string,
@@ -328,7 +351,8 @@ export const api = {
     onError?: (error: string) => void,
     onComplete?: () => void,
     signal?: AbortSignal,
-    sessionId?: string
+    sessionId?: string,
+    connectionId?: number
   ): (() => void) => {
     const controller = signal instanceof AbortController ? signal : new AbortController();
 
@@ -340,6 +364,7 @@ export const api = {
       },
       body: JSON.stringify({
         file_id: fileId,
+        connection_id: connectionId,
         api_key: apiKey || null,
         base_url: baseUrl || null,
         model: model || null,
@@ -400,7 +425,7 @@ export const api = {
   agentAnalyzeStream: (
     message: string,
     sessionId: string,
-    fileId: number,
+    fileId: number | undefined,
     history: Message[],
     apiKey?: string,
     baseUrl?: string,
@@ -412,7 +437,9 @@ export const api = {
     onError?: (error: string) => void,
     onComplete?: () => void,
     signal?: AbortSignal,
-    useRag: boolean = false // [新增]
+    useRag: boolean = false,
+    connectionId?: number,
+    enableMemory: boolean = false // [New Param]
   ): (() => void) => {
     const controller = signal instanceof AbortController ? signal : new AbortController();
 
@@ -426,12 +453,14 @@ export const api = {
         message,
         session_id: sessionId,
         file_id: fileId,
+        connection_id: connectionId,
         history: history.map(m => ({ role: m.role, content: m.content })),
         api_key: apiKey || null,
         base_url: baseUrl || null,
         model: model || null,
         max_tool_rounds: maxToolRounds || 12,
-        use_rag: useRag // Pass Flag
+        use_rag: useRag,
+        enable_memory: enableMemory // [New Param]
       }),
       signal: controller.signal,
     })
@@ -491,16 +520,109 @@ export const api = {
           }
           
           if (done) {
-            if (buffer.trim()) {
-              const line = buffer.trim();
-              if (line.startsWith('data:')) {
-                const payload = line.slice(5).trim();
-                if (payload === '[DONE]') {
-                  onComplete?.();
-                  return;
-                }
+            onComplete?.();
+            break;
+          }
+        }
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        onError?.(err?.message || String(err));
+      });
+
+    return () => controller.abort();
+  },
+  
+  // Refresh Memory [New Method]
+  refreshMemory: async (apiKey?: string, baseUrl?: string, model?: string) => {
+      try {
+          const response = await fetch(`${API_URL}/chat/memory/refresh`, {
+              method: 'POST',
+              headers: getHeaders(),
+              body: JSON.stringify({
+                  api_key: apiKey || null,
+                  base_url: baseUrl || null,
+                  model: model || null
+              })
+          });
+
+          if (!response.ok) {
+              const errorData = await response.json().catch(() => ({}));
+              throw new Error(errorData.detail || 'Memory refresh failed');
+          }
+          return await response.json();
+      } catch (error) {
+          handleApiError(error, "Refresh Memory");
+      }
+  },
+
+  // Confirm SQL and Resume
+  confirmSql: (
+    sessionId: string,
+    sql: string,
+    apiKey?: string,
+    baseUrl?: string,
+    model?: string,
+    onText?: (text: string) => void,
+    onToolCall?: (tool: string, status: string, sqlCode?: string) => void,
+    onToolResult?: (tool: string, result: string, status: string) => void,
+    onError?: (error: string) => void,
+    onComplete?: () => void,
+    signal?: AbortSignal
+  ): (() => void) => {
+    const controller = signal instanceof AbortController ? signal : new AbortController();
+
+    fetch(`${API_URL}/chat/agent/confirm`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getHeaders(),
+      },
+      body: JSON.stringify({
+        session_id: sessionId,
+        sql: sql,
+        api_key: apiKey || null,
+        base_url: baseUrl || null,
+        model: model || null
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok || !response.body) {
+          const msg = `HTTP ${response.status}`;
+          onError?.(msg);
+          return;
+        }
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (value) {
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop() || '';
+
+            for (const part of parts) {
+              const line = part.trim();
+              if (!line.startsWith('data:')) continue;
+              const payload = line.slice(5).trim();
+              if (payload === '[DONE]') {
+                onComplete?.();
+                return;
               }
+              try {
+                const event = JSON.parse(payload);
+                if (event.type === 'text') onText?.(event.content);
+                else if (event.type === 'tool_call') onToolCall?.(event.tool, event.status, event.sql_code);
+                else if (event.type === 'tool_result') onToolResult?.(event.tool, event.result, event.status);
+                else if (event.type === 'error') onError?.(event.error);
+              } catch(e) {}
             }
+          }
+          if (done) {
             onComplete?.();
             break;
           }

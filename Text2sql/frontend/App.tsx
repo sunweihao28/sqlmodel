@@ -3,11 +3,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Settings, Plus, MessageSquare, Send, Upload, LayoutGrid, 
   Database, Loader2, Menu, Sparkles, LogOut, User as UserIcon,
-  Bot, Trash2, BookOpen
+  Bot, Trash2, BookOpen, Brain, RefreshCw
 } from 'lucide-react';
 import { generateSessionTitle } from './services/geminiService';
 import SettingsModal from './components/SettingsModal';
-import KnowledgeBaseModal from './components/KnowledgeBaseModal'; // Import
+import KnowledgeBaseModal from './components/KnowledgeBaseModal';
 import MessageBubble from './components/MessageBubble';
 import AuthPage from './components/AuthPage';
 import { Session, Message, AppSettings, User, AVAILABLE_MODELS, SqlResult, ChartType } from './types';
@@ -23,8 +23,7 @@ function App() {
        const validModel = AVAILABLE_MODELS.some(m => m.value === parsed.model)
          ? parsed.model
          : 'gemini-2.5-flash';
-       // Ensure useRag exists
-       return { ...parsed, model: validModel, useRag: parsed.useRag ?? false };
+       return { ...parsed, model: validModel, useRag: parsed.useRag ?? false, enableMemory: parsed.enableMemory ?? false };
      }
 
      return {
@@ -33,7 +32,8 @@ function App() {
       customBaseUrl: '',
       customApiKey: '',
       useSimulationMode: true,
-      useRag: false, // Default RAG off
+      useRag: false,
+      enableMemory: false,
       dbConfig: {
         type: 'postgres',
         host: 'localhost',
@@ -41,7 +41,9 @@ function App() {
         database: '',
         user: '',
         password: '',
-        uploadedPath: ''
+        uploadedPath: '',
+        fileId: undefined,
+        connectionId: undefined
       }
     };
   });
@@ -79,7 +81,8 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isKbOpen, setIsKbOpen] = useState(false); // Knowledge Base Modal
+  const [isKbOpen, setIsKbOpen] = useState(false); 
+  const [isRefreshingMemory, setIsRefreshingMemory] = useState(false); // [New]
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamController, setStreamController] = useState<AbortController | null>(null);
@@ -96,6 +99,7 @@ function App() {
         title: s.title,
         updatedAt: s.updatedAt,
         fileId: s.fileId,
+        connectionId: s.connectionId,
         messages: []
       }));
       
@@ -108,9 +112,10 @@ function App() {
 
       setSessions([placeholderSession, ...formattedRemoteSessions]);
       setCurrentSessionId('1');
+      // Reset current active DB config on load (user needs to select session)
       setSettings(prev => ({
         ...prev,
-        dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '' }
+        dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '', connectionId: undefined }
       }));
 
     } catch (e) {
@@ -128,13 +133,20 @@ function App() {
     try {
       const msgs = await api.getSessionMessages(sessionId);
       const hydratedMsgs = msgs.map((msg: any) => {
-          let sqlQuery = undefined;
+          let sqlQuery = msg.sqlQuery;
           let executionResult = undefined;
+          let status = msg.status || 'executed';
 
           if (msg.steps && Array.isArray(msg.steps)) {
               const sqlStep = msg.steps.find((s: any) => s.tool === 'sql_inter');
-              if (sqlStep && sqlStep.input) {
+              // Only override if sqlQuery not already set by metadata
+              if (sqlStep && sqlStep.input && !sqlQuery) {
                   sqlQuery = sqlStep.input;
+              }
+              // If we have a pending step, set status
+              if (sqlStep && sqlStep.status === 'pending_approval') {
+                  status = 'pending_approval';
+                  sqlQuery = sqlStep.input; // Ensure query is set
               }
           }
 
@@ -149,7 +161,7 @@ function App() {
               };
           }
 
-          return { ...msg, sqlQuery, executionResult };
+          return { ...msg, sqlQuery, executionResult, status };
       });
       setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: hydratedMsgs } : s));
     } catch (e) {
@@ -199,17 +211,22 @@ function App() {
         if (session && session.messages.length === 0) {
             loadSessionMessages(currentSessionId);
         }
-        if (session && session.fileId) {
+        // When switching session, apply its DB config to global settings temporarily so new messages use it
+        if (session) {
             setSettings(prev => ({
                 ...prev,
-                dbConfig: { ...prev.dbConfig, fileId: session.fileId }
+                dbConfig: { 
+                    ...prev.dbConfig, 
+                    fileId: session.fileId, 
+                    connectionId: session.connectionId,
+                    // Clear uploaded path if it's a connection session to update UI
+                    uploadedPath: session.connectionId ? '' : prev.dbConfig.uploadedPath 
+                }
             }));
         }
     } else if (currentSessionId === '1') {
-        setSettings(prev => ({
-            ...prev,
-            dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '' }
-        }));
+        // Keep current settings as is, or reset? 
+        // Better to keep them so user can start new chat with current config.
     }
   }, [currentSessionId]);
 
@@ -227,7 +244,7 @@ function App() {
     setCurrentSessionId('1');
     setSettings(prev => ({
         ...prev,
-        dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '' }
+        dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '', connectionId: undefined }
     }));
   };
 
@@ -270,18 +287,321 @@ function App() {
       } : s));
     }
   };
+  
+  const handleRefreshMemory = async () => {
+      if (isRefreshingMemory) return;
+      setIsRefreshingMemory(true);
+      try {
+          await api.refreshMemory(settings.customApiKey, settings.customBaseUrl, settings.model);
+          alert(settings.language === 'zh' ? '长期记忆已刷新！' : 'Long-term memory refreshed!');
+      } catch (e: any) {
+          alert(settings.language === 'zh' ? `刷新失败: ${e.message}` : `Refresh failed: ${e.message}`);
+      } finally {
+          setIsRefreshingMemory(false);
+      }
+  };
 
   const handleNewSession = async () => {
     setCurrentSessionId('1');
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
+  
+  // Reusable function to process stream callbacks
+  // [Fix] Added preserveInitialContent to allow appending instead of replacing
+  const createStreamCallbacks = (sessionId: string, msgId: string, initialContent: string, preserveInitialContent: boolean = false) => {
+      let contentText = initialContent;
+      const toolStatus: Record<string, string> = {};
+      let hasReceivedText = false;
+      let hasReceivedToolCall = false;
+      let hasReceivedToolResult = false;
+      
+      return {
+          onText: (text: string) => {
+              hasReceivedText = true;
+              
+              // Only clear initial content if we are NOT preserving it (e.g. initial thinking msg)
+              if (!preserveInitialContent && contentText === initialContent) {
+                const hasIcon = /^[🔧📊✅❌💡📝🤔📚🧠]/.test(text.trim());
+                if (!hasIcon) {
+                  const iconPrefix = settings.language === 'zh' ? '💡 ' : '💡 ';
+                  contentText = iconPrefix + text;
+                } else {
+                  contentText = text;
+                }
+              } else {
+                contentText += text;
+              }
+              
+              setSessions(prev => prev.map(s => s.id === sessionId ? {
+                ...s,
+                messages: s.messages.map(m => m.id === msgId ? {
+                  ...m,
+                  content: contentText,
+                  status: 'thinking' as const
+                } : m)
+              } : s));
+          },
+          onToolCall: (tool: string, status: string, sqlCode?: string) => {
+              hasReceivedToolCall = true;
+              toolStatus[tool] = status;
+              
+              // If confirmation needed, stop thinking and show button
+              if (status === 'pending_approval') {
+                  if (!preserveInitialContent && contentText === initialContent) contentText = "";
+                  contentText += settings.language === 'zh'
+                      ? "\n\n⚠️ **需要确认**: 我准备执行以下 SQL 查询，请确认..."
+                      : "\n\n⚠️ **Approval Required**: I prepared the following SQL query. Please confirm...";
+                  
+                   setSessions(prev => prev.map(s => s.id === sessionId ? {
+                    ...s,
+                    messages: s.messages.map(m => m.id === msgId ? {
+                      ...m,
+                      content: contentText,
+                      sqlQuery: sqlCode,
+                      status: 'pending_approval' as const
+                    } : m)
+                  } : s));
+                  // The backend stream ends here automatically
+                  return;
+              }
+
+              if (!preserveInitialContent && contentText === initialContent) {
+                contentText = "";
+              }
+              
+              let toolCallText = settings.language === 'zh' 
+                ? `\n\n🔧 **正在执行**: ${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}...` 
+                : `\n\n🔧 **Executing**: ${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}...`;
+              
+              if (tool === 'sql_inter' && sqlCode) {
+                toolCallText += `\n\n\`\`\`sql\n${sqlCode}\n\`\`\``;
+              }
+              
+              contentText = contentText + toolCallText;
+              setSessions(prev => prev.map(s => s.id === sessionId ? {
+                ...s,
+                messages: s.messages.map(m => m.id === msgId ? {
+                  ...m,
+                  content: contentText,
+                  sqlQuery: (tool === 'sql_inter' && sqlCode) ? sqlCode : m.sqlQuery,
+                  status: 'executing' as const
+                } : m)
+              } : s));
+          },
+          onToolResult: (tool: string, result: string, status: string) => {
+              hasReceivedToolResult = true;
+              const toolCallPattern = settings.language === 'zh' 
+                ? new RegExp(`🔧 \\*\\*正在执行\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}\\.\\.\\.`, 'g')
+                : new RegExp(`🔧 \\*\\*Executing\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}\\.\\.\\.`, 'g');
+              
+              // Only replace if we are sure it's just the status text
+              if (!preserveInitialContent) {
+                   contentText = contentText.replace(toolCallPattern, '');
+              }
+              
+              if (!preserveInitialContent && contentText === initialContent) contentText = "";
+              
+              if (status === 'success') {
+                if (tool === 'python_inter') {
+                  try {
+                    const parsed = JSON.parse(result);
+                    if (parsed.type === 'visualization_config' && parsed.config) {
+                      const vizConfig = parsed.config;
+                      
+                      // [FIX] Normalize data if it's column-oriented (object of arrays) instead of row-oriented (array of objects)
+                      let vizData = vizConfig.data;
+                      if (vizData && !Array.isArray(vizData) && typeof vizData === 'object') {
+                          const keys = Object.keys(vizData);
+                          if (keys.length > 0) {
+                              const rowCount = vizData[keys[0]]?.length || 0;
+                              const newData = [];
+                              for (let i = 0; i < rowCount; i++) {
+                                  const row: any = {};
+                                  keys.forEach(k => {
+                                      row[k] = vizData[k][i];
+                                  });
+                                  newData.push(row);
+                              }
+                              vizData = newData;
+                              // Update local config ref to use new data
+                              vizConfig.data = newData;
+                          }
+                      }
+
+                      // Check using the normalized data
+                      if (vizConfig.type && vizData && Array.isArray(vizData)) {
+                        const columns = vizData.length > 0 ? Object.keys(vizData[0]) : [];
+                        contentText += settings.language === 'zh'
+                          ? `\n\n📊 已生成可视化配置，图表将在下方显示`
+                          : `\n\n📊 Visualization config generated, chart will be displayed below`;
+                        
+                        setSessions(prev => prev.map(s => s.id === sessionId ? {
+                          ...s,
+                          messages: s.messages.map(m => m.id === msgId ? {
+                            ...m,
+                            content: contentText,
+                            executionResult: {
+                              columns: columns,
+                              data: vizData, // Use normalized data
+                              chartTypeSuggestion: vizConfig.type,
+                              summary: vizConfig.title || (settings.language === 'zh' ? '可视化图表' : 'Visualization'),
+                              visualizationConfig: vizConfig,
+                              displayType: vizConfig.displayType || 'both'
+                            },
+                            status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
+                          } : m)
+                        } : s));
+                        delete toolStatus[tool];
+                        return;
+                      }
+                    }
+                  } catch (e) { }
+                }
+                
+                if (tool === 'sql_inter') {
+                  try {
+                    const sqlResult = JSON.parse(result);
+                    if (sqlResult.columns && sqlResult.rows && Array.isArray(sqlResult.rows)) {
+                      const rowCount = sqlResult.row_count || sqlResult.rows.length;
+                      const toolResultText = settings.language === 'zh'
+                        ? `\n\n✅ SQL查询执行成功，返回 ${rowCount} 条结果`
+                        : `\n\n✅ SQL query executed successfully, returned ${rowCount} rows`;
+                      contentText += toolResultText;
+                      
+                      setSessions(prev => prev.map(s => s.id === sessionId ? {
+                        ...s,
+                        messages: s.messages.map(m => m.id === msgId ? {
+                          ...m,
+                          content: contentText,
+                          status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
+                        } : m)
+                      } : s));
+                      delete toolStatus[tool];
+                      return;
+                    }
+                  } catch (e) { }
+                }
+                
+                const resultPreview = result.length > 300 ? result.substring(0, 300) + '\n...' : result;
+                const toolResultText = settings.language === 'zh'
+                  ? `\n\n✅ **${tool}** 执行成功：\n\`\`\`\n${resultPreview}\n\`\`\``
+                  : `\n\n✅ **${tool}** executed successfully:\n\`\`\`\n${resultPreview}\n\`\`\``;
+                contentText += toolResultText;
+              } else {
+                const toolErrorText = settings.language === 'zh'
+                  ? `\n\n❌ **${tool}** 执行失败: ${result}`
+                  : `\n\n❌ **${tool}** execution failed: ${result}`;
+                contentText += toolErrorText;
+              }
+              
+              delete toolStatus[tool];
+              setSessions(prev => prev.map(s => s.id === sessionId ? {
+                ...s,
+                messages: s.messages.map(m => m.id === msgId ? {
+                  ...m,
+                  content: contentText,
+                  status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
+                } : m)
+              } : s));
+          },
+          onError: (error: string) => {
+              console.error("Agent stream error:", error);
+              setSessions(prev => prev.map(s => s.id === sessionId ? {
+                ...s,
+                messages: s.messages.map(m => m.id === msgId ? {
+                  ...m,
+                  content: contentText + (settings.language === 'zh' 
+                    ? `\n\n❌ 分析出错: ${error}` 
+                    : `\n\n❌ Analysis error: ${error}`),
+                  status: 'error' as const,
+                  error: error
+                } : m)
+              } : s));
+              setIsStreaming(false);
+              setIsProcessing(false);
+              setStreamController(null);
+          },
+          onComplete: () => {
+              if (!hasReceivedText && !hasReceivedToolCall && !hasReceivedToolResult) {
+                // If it's a resume stream (confirmation), it's ok if we received nothing new if the result was just injected
+                if (!preserveInitialContent) {
+                    contentText = settings.language === 'zh' 
+                    ? '❌ 分析完成，但未收到响应内容。' 
+                    : '❌ Analysis completed, but no response content received.';
+                }
+              } else if (!hasReceivedText && hasReceivedToolResult) {
+                 if (!contentText || contentText === initialContent || contentText.trim() === '') {
+                  const toolHint = settings.language === 'zh'
+                    ? '\n\n✅ 分析已完成。工具执行成功，但未生成文本回答。'
+                    : '\n\n✅ Analysis completed. Tools executed successfully, but no text response was generated.';
+                  contentText = (contentText === initialContent ? '' : contentText) + toolHint;
+                }
+              } else if (contentText === initialContent && !preserveInitialContent) {
+                 if (hasReceivedText) {
+                  contentText = settings.language === 'zh' ? '✅ 分析完成。' : '✅ Analysis completed.';
+                }
+              }
+              
+              // Only mark as executed if not pending approval
+              setSessions(prev => {
+                  const currentSess = prev.find(s => s.id === sessionId);
+                  const currentMsg = currentSess?.messages.find(m => m.id === msgId);
+                  if (currentMsg?.status === 'pending_approval') return prev;
+                  
+                  return prev.map(s => s.id === sessionId ? {
+                    ...s,
+                    messages: s.messages.map(m => m.id === msgId ? {
+                      ...m,
+                      content: contentText,
+                      status: 'executed' as const
+                    } : m)
+                  } : s);
+              });
+              
+              setIsStreaming(false);
+              setIsProcessing(false);
+              setStreamController(null);
+          }
+      };
+  };
 
   const handleSendMessage = async () => {
     if (!input.trim() || isProcessing || isStreaming) return;
     
-    if (!settings.dbConfig.fileId) {
-      alert(settings.language === 'zh' ? '请先上传数据库文件' : 'Please upload a database file first');
+    // Check if any DB source is configured
+    if (!settings.dbConfig.fileId && !settings.dbConfig.connectionId) {
+      alert(settings.language === 'zh' ? '请先上传数据库文件或在设置中连接数据库' : 'Please upload a database file or connect to a database in settings');
+      setIsSettingsOpen(true);
       return;
+    }
+
+    // 1. If this is the placeholder session ('1'), create a real one now
+    let activeSessionId = currentSessionId;
+    if (currentSessionId === '1') {
+        try {
+            const newSession = await api.createSession(
+                settings.dbConfig.fileId, 
+                input.substring(0, 20),
+                settings.dbConfig.connectionId
+            );
+            
+            // Transform to local session
+            const newLocalSession: Session = {
+                id: newSession.id,
+                title: newSession.title,
+                messages: [],
+                updatedAt: Date.now(),
+                fileId: settings.dbConfig.fileId,
+                connectionId: settings.dbConfig.connectionId
+            };
+            
+            setSessions(prev => [prev[0], newLocalSession, ...prev.slice(1)]);
+            setCurrentSessionId(newSession.id);
+            activeSessionId = newSession.id;
+        } catch (e) {
+            alert("Failed to create session");
+            return;
+        }
     }
     
     const userMsg: Message = {
@@ -291,17 +611,20 @@ function App() {
       timestamp: Date.now()
     };
 
-    const updatedMessages = [...currentSession.messages, userMsg];
-    const isFirstMessage = currentSession.messages.length === 0;
-
-    setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, messages: updatedMessages } : s));
+    // Optimistic update for UI
+    setSessions(prev => prev.map(s => s.id === activeSessionId ? { 
+        ...s, 
+        messages: [...s.messages, userMsg] 
+    } : s));
+    
     setInput('');
+    const activeSession = sessions.find(s => s.id === activeSessionId) || { messages: [] };
+    const updatedHistory = [...activeSession.messages, userMsg];
 
-    if (isFirstMessage) {
+    // Generate title if it's the first real message
+    if (activeSession.messages.length === 0) {
       generateSessionTitle(userMsg.content, settings.language).then(newTitle => {
-        if (currentSessionId !== '1') {
-             setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: newTitle } : s));
-        }
+        setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, title: newTitle } : s));
       });
     }
 
@@ -317,9 +640,9 @@ function App() {
       timestamp: Date.now()
     };
 
-    setSessions(prev => prev.map(s => s.id === currentSessionId ? { 
+    setSessions(prev => prev.map(s => s.id === activeSessionId ? { 
       ...s, 
-      messages: [...updatedMessages, botMsg]
+      messages: [...updatedHistory, botMsg]
     } : s));
 
     if (streamController) {
@@ -331,236 +654,87 @@ function App() {
     setIsStreaming(true);
     setIsProcessing(true);
 
-    let contentText = initialContent;
-    const toolStatus: Record<string, string> = {};
-    let hasReceivedText = false;
-    let hasReceivedToolCall = false;
-    let hasReceivedToolResult = false;
+    const callbacks = createStreamCallbacks(activeSessionId, botMsgId, initialContent, false); // False: New message
 
     try {
-      const stopStream = api.agentAnalyzeStream(
+      api.agentAnalyzeStream(
         userMsg.content,
-        currentSessionId, 
-        settings.dbConfig.fileId!,
-        currentSession.messages,
+        activeSessionId, 
+        settings.dbConfig.fileId, 
+        updatedHistory,
         settings.customApiKey,
         settings.customBaseUrl,
         settings.model,
         12, 
-        (text: string) => {
-          hasReceivedText = true;
-          if (contentText === initialContent) {
-            const hasIcon = /^[🔧📊✅❌💡📝🤔📚]/.test(text.trim());
-            if (!hasIcon) {
-              const iconPrefix = settings.language === 'zh' ? '💡 ' : '💡 ';
-              contentText = iconPrefix + text;
-            } else {
-              contentText = text;
-            }
-          } else {
-            contentText += text;
-          }
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-            ...s,
-            messages: s.messages.map(m => m.id === botMsgId ? {
-              ...m,
-              content: contentText,
-              status: 'thinking' as const
-            } : m)
-          } : s));
-        },
-        (tool: string, status: string, sqlCode?: string) => {
-          hasReceivedToolCall = true;
-          toolStatus[tool] = status;
-          if (contentText === initialContent) {
-            contentText = "";
-          }
-          
-          let toolCallText = settings.language === 'zh' 
-            ? `\n\n🔧 **正在执行**: ${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}...` 
-            : `\n\n🔧 **Executing**: ${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}...`;
-          
-          if (tool === 'sql_inter' && sqlCode) {
-            toolCallText += `\n\n\`\`\`sql\n${sqlCode}\n\`\`\``;
-          }
-          
-          contentText = contentText + toolCallText;
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-            ...s,
-            messages: s.messages.map(m => m.id === botMsgId ? {
-              ...m,
-              content: contentText,
-              sqlQuery: (tool === 'sql_inter' && sqlCode) ? sqlCode : m.sqlQuery,
-              status: 'executing' as const
-            } : m)
-          } : s));
-        },
-        (tool: string, result: string, status: string) => {
-          hasReceivedToolResult = true;
-          const toolCallPattern = settings.language === 'zh' 
-            ? new RegExp(`🔧 \\*\\*正在执行\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}\\.\\.\\.`, 'g')
-            : new RegExp(`🔧 \\*\\*Executing\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}\\.\\.\\.`, 'g');
-          
-          contentText = contentText.replace(toolCallPattern, '');
-          
-          if (contentText === initialContent) contentText = "";
-          
-          if (status === 'success') {
-            if (tool === 'python_inter') {
-              try {
-                const parsed = JSON.parse(result);
-                if (parsed.type === 'visualization_config' && parsed.config) {
-                  const vizConfig = parsed.config;
-                  if (vizConfig.type && vizConfig.data && Array.isArray(vizConfig.data)) {
-                    const columns = vizConfig.data.length > 0 ? Object.keys(vizConfig.data[0]) : [];
-                    contentText += settings.language === 'zh'
-                      ? `\n\n📊 已生成可视化配置，图表将在下方显示`
-                      : `\n\n📊 Visualization config generated, chart will be displayed below`;
-                    
-                    setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-                      ...s,
-                      messages: s.messages.map(m => m.id === botMsgId ? {
-                        ...m,
-                        content: contentText,
-                        executionResult: {
-                          columns: columns,
-                          data: vizConfig.data,
-                          chartTypeSuggestion: vizConfig.type,
-                          summary: vizConfig.title || (settings.language === 'zh' ? '可视化图表' : 'Visualization'),
-                          visualizationConfig: vizConfig,
-                          displayType: vizConfig.displayType || 'both'
-                        },
-                        status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
-                      } : m)
-                    } : s));
-                    delete toolStatus[tool];
-                    return;
-                  }
-                }
-              } catch (e) { }
-            }
-            
-            if (tool === 'sql_inter') {
-              try {
-                const sqlResult = JSON.parse(result);
-                if (sqlResult.columns && sqlResult.rows && Array.isArray(sqlResult.rows)) {
-                  const rowCount = sqlResult.row_count || sqlResult.rows.length;
-                  const toolResultText = settings.language === 'zh'
-                    ? `\n\n✅ SQL查询执行成功，返回 ${rowCount} 条结果`
-                    : `\n\n✅ SQL query executed successfully, returned ${rowCount} rows`;
-                  contentText += toolResultText;
-                  
-                  setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-                    ...s,
-                    messages: s.messages.map(m => m.id === botMsgId ? {
-                      ...m,
-                      content: contentText,
-                      status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
-                    } : m)
-                  } : s));
-                  delete toolStatus[tool];
-                  return;
-                }
-              } catch (e) { }
-            }
-            
-            const resultPreview = result.length > 300 ? result.substring(0, 300) + '\n...' : result;
-            const toolResultText = settings.language === 'zh'
-              ? `\n\n✅ **${tool}** 执行成功：\n\`\`\`\n${resultPreview}\n\`\`\``
-              : `\n\n✅ **${tool}** executed successfully:\n\`\`\`\n${resultPreview}\n\`\`\``;
-            contentText += toolResultText;
-          } else {
-            const toolErrorText = settings.language === 'zh'
-              ? `\n\n❌ **${tool}** 执行失败: ${result}`
-              : `\n\n❌ **${tool}** execution failed: ${result}`;
-            contentText += toolErrorText;
-          }
-          
-          delete toolStatus[tool];
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-            ...s,
-            messages: s.messages.map(m => m.id === botMsgId ? {
-              ...m,
-              content: contentText,
-              status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
-            } : m)
-          } : s));
-        },
-        (error: string) => {
-          console.error("Agent stream error:", error);
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-            ...s,
-            messages: s.messages.map(m => m.id === botMsgId ? {
-              ...m,
-              content: contentText + (settings.language === 'zh' 
-                ? `\n\n❌ 分析出错: ${error}` 
-                : `\n\n❌ Analysis error: ${error}`),
-              status: 'error' as const,
-              error: error
-            } : m)
-          } : s));
-          setIsStreaming(false);
-          setIsProcessing(false);
-          setStreamController(null);
-        },
-        () => {
-          if (!hasReceivedText && !hasReceivedToolCall && !hasReceivedToolResult) {
-            contentText = settings.language === 'zh' 
-              ? '❌ 分析完成，但未收到响应内容。' 
-              : '❌ Analysis completed, but no response content received.';
-          } else if (!hasReceivedText && hasReceivedToolResult) {
-             if (!contentText || contentText === initialContent || contentText.trim() === '') {
-              const toolHint = settings.language === 'zh'
-                ? '\n\n✅ 分析已完成。工具执行成功，但未生成文本回答。'
-                : '\n\n✅ Analysis completed. Tools executed successfully, but no text response was generated.';
-              contentText = (contentText === initialContent ? '' : contentText) + toolHint;
-            }
-          } else if (contentText === initialContent) {
-             if (hasReceivedText) {
-              contentText = settings.language === 'zh' ? '✅ 分析完成。' : '✅ Analysis completed.';
-            }
-          } else {
-            const hasIcon = /^[🔧📊✅❌💡📝🤔📚]/.test(contentText.trim());
-            if (!hasIcon && contentText.trim() && contentText !== initialContent) {
-              const iconPrefix = settings.language === 'zh' ? '💡 ' : '💡 ';
-              contentText = iconPrefix + contentText;
-            }
-          }
-          
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-            ...s,
-            messages: s.messages.map(m => m.id === botMsgId ? {
-              ...m,
-              content: contentText,
-              status: 'executed' as const
-            } : m)
-          } : s));
-          setIsStreaming(false);
-          setIsProcessing(false);
-          setStreamController(null);
-        },
+        callbacks.onText,
+        callbacks.onToolCall,
+        callbacks.onToolResult,
+        callbacks.onError,
+        callbacks.onComplete,
         controller.signal,
-        settings.useRag // Pass useRag flag
+        settings.useRag,
+        settings.dbConfig.connectionId,
+        settings.enableMemory // Pass memory flag
       );
-      setStreamController(controller);
-
     } catch (error: any) {
       console.error("Agent analysis error:", error);
-      setSessions(prev => prev.map(s => s.id === currentSessionId ? {
-        ...s,
-        messages: s.messages.map(m => m.id === botMsgId ? {
-          ...m,
-          content: settings.language === 'zh' 
-            ? `分析失败: ${error.message || error}` 
-            : `Analysis failed: ${error.message || error}`,
-          status: 'error' as const,
-          error: error.message || String(error)
-        } : m)
-      } : s));
-      setIsStreaming(false);
-      setIsProcessing(false);
-      setStreamController(null);
+      callbacks.onError(error.message || String(error));
     }
+  };
+
+  const handleConfirmSql = async (messageId: string, sql: string) => {
+      const currentSess = sessions.find(s => s.id === currentSessionId);
+      const originalMsg = currentSess?.messages.find(m => m.id === messageId);
+      const originalContent = originalMsg?.content || "";
+
+      // 1. Update UI to executing state
+      setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+          ...s,
+          messages: s.messages.map(m => m.id === messageId ? {
+              ...m,
+              status: 'executing',
+              sqlQuery: sql, // Update with edited SQL
+              content: m.content + (settings.language === 'zh' ? "\n\n🚀 用户确认执行..." : "\n\n🚀 User confirmed execution...")
+          } : m)
+      } : s));
+
+      const controller = new AbortController();
+      setStreamController(controller);
+      setIsStreaming(true);
+      setIsProcessing(true);
+      
+      // [Fix] Pass true for preserveInitialContent to allow appending
+      const updatedInitialContent = originalContent + (settings.language === 'zh' ? "\n\n🚀 用户确认执行..." : "\n\n🚀 User confirmed execution...");
+      const callbacks = createStreamCallbacks(currentSessionId, messageId, updatedInitialContent, true); 
+
+      try {
+          api.confirmSql(
+              currentSessionId,
+              sql,
+              settings.customApiKey,
+              settings.customBaseUrl,
+              settings.model,
+              callbacks.onText,
+              callbacks.onToolCall,
+              callbacks.onToolResult,
+              callbacks.onError,
+              callbacks.onComplete,
+              controller.signal
+          );
+      } catch (e: any) {
+           callbacks.onError(e.message);
+      }
+  };
+  
+  const handleRejectSql = (messageId: string) => {
+       setSessions(prev => prev.map(s => s.id === currentSessionId ? {
+          ...s,
+          messages: s.messages.map(m => m.id === messageId ? {
+              ...m,
+              status: 'error',
+              content: m.content + (settings.language === 'zh' ? "\n\n❌ 用户拒绝执行。" : "\n\n❌ User rejected execution.")
+          } : m)
+      } : s));
   };
 
 
@@ -597,7 +771,8 @@ function App() {
             type: 'sqlite' as const,
             uploadedPath: result.file_path,
             database: result.filename,
-            fileId: result.id
+            fileId: result.id,
+            connectionId: undefined // Reset conn ID when file uploaded
           }
         };
         setSettings(newSettings);
@@ -622,7 +797,7 @@ function App() {
 
         let summaryText = "";
         try {
-          const stopStream = api.getDbSummaryStream(
+          api.getDbSummaryStream(
             result.id,
             settings.customApiKey,
             settings.customBaseUrl,
@@ -699,7 +874,6 @@ function App() {
             <Plus size={18} /> {t.newAnalysis}
           </button>
           
-          {/* Knowledge Base Button */}
            <button 
             onClick={() => setIsKbOpen(true)}
             className="w-full flex items-center gap-2 px-4 py-3 rounded-full text-sm font-medium transition-colors bg-[#2a2b2d] text-subtext hover:bg-[#353638] hover:text-white"
@@ -796,17 +970,19 @@ function App() {
           </div>
           
           <div className="flex items-center gap-2 text-xs text-subtext">
-             <span className={`w-2 h-2 rounded-full ${settings.dbConfig.uploadedPath ? 'bg-blue-500' : 'bg-gray-500'}`} />
-             {settings.dbConfig.uploadedPath 
-               ? (settings.language === 'zh' ? '已连接云端数据库' : 'Cloud DB Connected') 
-               : t.envConnected}
+             <span className={`w-2 h-2 rounded-full ${settings.dbConfig.fileId || settings.dbConfig.connectionId ? 'bg-green-500' : 'bg-gray-500'}`} />
+             {settings.dbConfig.fileId 
+               ? (settings.language === 'zh' ? '已连接文件' : 'File Connected') 
+               : settings.dbConfig.connectionId
+                 ? (settings.language === 'zh' ? '已连接数据库' : 'DB Connected')
+                 : t.envConnected}
           </div>
         </header>
 
         {/* Chat Area */}
         <div className="flex-1 overflow-y-auto" ref={scrollRef}>
-          {/* ... existing streaming indicator logic ... */}
-          {isStreaming && !settings.dbConfig.fileId && (
+          {/* Streaming Indicator */}
+          {isStreaming && !settings.dbConfig.fileId && !settings.dbConfig.connectionId && (
             <div className="flex items-center gap-3 p-4 mx-4 mb-4 bg-[#2a2b2d] rounded-lg border border-accent/30">
               <Loader2 size={14} className="animate-spin text-white" />
               <div className="flex-1 text-sm">{settings.language === 'zh' ? '正在生成摘要...' : 'Generating summary...'}</div>
@@ -844,9 +1020,15 @@ function App() {
           ) : (
             <div className="max-w-4xl mx-auto py-6">
               {currentSession?.messages.map(msg => (
-                <MessageBubble key={msg.id} message={msg} language={settings.language} />
+                <MessageBubble 
+                    key={msg.id} 
+                    message={msg} 
+                    language={settings.language}
+                    onConfirmSql={handleConfirmSql}
+                    onRejectSql={handleRejectSql}
+                />
               ))}
-              {isProcessing && !currentSession?.messages.some(m => m.role === 'model' && (m.status === 'thinking' || m.status === 'executing')) && (
+              {isProcessing && !currentSession?.messages.some(m => m.role === 'model' && (m.status === 'thinking' || m.status === 'executing' || m.status === 'pending_approval')) && (
                 <div className="flex gap-4 p-6 bg-[#1E1F20]/50">
                   <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-cyan-400 flex items-center justify-center shrink-0">
                     <Loader2 size={18} className="animate-spin text-white" />
@@ -899,6 +1081,33 @@ function App() {
                   <BookOpen size={14} />
                   <span>RAG {settings.useRag ? 'ON' : 'OFF'}</span>
                 </button>
+                
+                {/* Memory Toggle [New] */}
+                <div className="flex items-center gap-1">
+                    <button 
+                      onClick={() => setSettings(s => ({...s, enableMemory: !s.enableMemory}))}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        settings.enableMemory 
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50' 
+                          : 'bg-[#2a2b2d] text-subtext border border-transparent hover:bg-[#353638]'
+                      }`}
+                      title={settings.language === 'zh' ? "启用/禁用长期记忆" : "Enable/Disable Long-term Memory"}
+                    >
+                      <Brain size={14} />
+                      <span>{settings.language === 'zh' ? '记忆' : 'Memory'} {settings.enableMemory ? 'ON' : 'OFF'}</span>
+                    </button>
+                    {settings.enableMemory && (
+                        <button 
+                            onClick={handleRefreshMemory} 
+                            disabled={isRefreshingMemory}
+                            className={`p-1.5 rounded-lg bg-[#2a2b2d] text-subtext hover:text-white transition-colors ${isRefreshingMemory ? 'animate-spin opacity-50' : ''}`}
+                            title={settings.language === 'zh' ? '刷新记忆' : 'Refresh Memory'}
+                        >
+                            <RefreshCw size={12} />
+                        </button>
+                    )}
+                </div>
+
               </div>
               <button 
                 onClick={handleSendMessage}

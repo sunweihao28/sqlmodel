@@ -5,21 +5,21 @@ export type ChartType = 'bar' | 'line' | 'pie' | 'table';
 export type DisplayType = 'table' | 'chart' | 'both'; 
 
 export interface VisualizationConfig {
-  type: ChartType;  // 图表类型
-  title?: string;   // 图表标题
-  displayType?: DisplayType; // 显示类型（默认：'both'，保持向后兼容）
+  type: ChartType;
+  title?: string;
+  displayType?: DisplayType;
   xAxis?: {
-    key: string;    // X轴数据字段名
-    label?: string; // X轴标签
+    key: string;
+    label?: string;
   };
   yAxis?: {
-    key?: string;   // Y轴数据字段名（可选，用于多系列）
-    label?: string; // Y轴标签
+    key?: string;
+    label?: string;
   };
-  data: any[];      // 图表数据（对象数组）
-  series?: Array<{  // 数据系列（用于多系列图表）
-    key: string;    // 数据字段名
-    name?: string;  // 系列名称
+  data: any[];
+  series?: Array<{
+    key: string;
+    name?: string;
   }>;
 }
 
@@ -59,6 +59,7 @@ export interface Session {
   messages: Message[];
   updatedAt: number;
   fileId?: number;
+  connectionId?: number; // [Added]
   backendId?: string;
 }
 
@@ -71,6 +72,7 @@ export interface DbConfig {
   password: string;
   uploadedPath?: string;
   fileId?: number;
+  connectionId?: number; // [Added]
 }
 
 export interface AppSettings {
@@ -79,11 +81,11 @@ export interface AppSettings {
   customBaseUrl?: string;
   customApiKey?: string;
   useSimulationMode: boolean;
-  useRag: boolean; // [新增]
+  useRag: boolean;
+  enableMemory: boolean; // [New]
   dbConfig: DbConfig;
 }
 
-// [新增] RAG Document
 export interface RagDocument {
   id: string;
   name: string;

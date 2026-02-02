@@ -99,7 +99,7 @@ def generate_analysis(question: str, data: list, api_key: str = None, base_url: 
     User asked: "{question}"
     Data retrieved (first 20 rows): {data_preview}
     
-    Provide a very brief (2 sentences) summary of this data in the same language as the question.
+    Provide a very brief (2 sentences) summary of this data in Chinese (Simplified).
     """
     return _call_llm(prompt, model or 'gemini-2.5-flash', api_key, base_url)
 
@@ -146,6 +146,25 @@ def generate_schema_summary_stream(schema: str, api_key: str = None, base_url: s
         yield from _stream_openai_compatible(prompt, model or 'gpt-4o', api_key, base_url)
     else:
         yield from _stream_gemini(prompt, model or 'gemini-2.5-flash', api_key)
+
+def summarize_user_history(history_text: str, api_key: str = None, base_url: str = None, model: str = None) -> str:
+    """
+    生成用户的长期记忆/画像摘要
+    """
+    prompt = f"""
+请阅读以下的历史对话记录，并将其浓缩为一个简洁的用户画像/摘要。
+
+要求：
+1. 提取用户的个性化偏好（如喜欢的图表类型、关注的数据领域）。
+2. 提取用户经常查询的关键业务指标或结论。
+3. 省略日常寒暄和非必要的对话细节。
+4. 输出一段连贯的文本，作为后续对话的"长期记忆"背景。
+5. 不要添加任何开场白或结束语，直接输出摘要内容。
+
+历史记录内容：
+{history_text}
+"""
+    return _call_llm(prompt, model or 'gemini-2.5-flash', api_key, base_url)
 
 def _stream_openai_compatible(prompt: str, model: str, api_key: str, base_url: str) -> Iterator[str]:
     # ... existing code ...
@@ -200,42 +219,45 @@ def _clean_sql(text: str) -> str:
 
 def agent_analyze_database_stream(
     question: str,
-    db_path: str,
     schema: str,
+    db_path: str = None, 
+    connection_url: str = None, 
     history: List[Dict] = None,
     api_key: str = None,
     base_url: str = None,
     model: str = None,
     max_tool_rounds: int = 12,
-    use_rag: bool = False # [新增参数]
+    use_rag: bool = False,
+    allow_auto_execute: bool = False,
+    user_memory: str = None # [New Param]
 ) -> Iterator[Dict[str, Any]]:
     """
-    流式Agent推理函数：自主调用工具函数进行数据库分析（流式输出）
+    流式Agent推理函数
     """
-    # 1. RAG 检索逻辑 (如果启用)
+    # 1. RAG Context
     rag_context = ""
     if use_rag:
         try:
-            # [修改] 传入 api_key 和 base_url 给 hybrid_search
             docs = rag_service_instance.hybrid_search(
                 question, 
                 api_key=api_key, 
                 base_url=base_url
             )
-            
             if docs:
                 rag_context = "\n\n【知识库参考信息 (RAG Retrieval)】:\n"
                 for i, doc in enumerate(docs):
                     rag_context += f"文档片段 {i+1} (来源: {doc.metadata.get('original_file', 'unknown')}):\n{doc.page_content}\n---\n"
-                print(f"RAG Retrieved {len(docs)} documents.")
                 
-                # 通知前端正在使用知识库
-                yield {"type": "text", "content": f"📚 已检索到 {len(docs)} 条相关知识库文档片段...\n\n"}
-            else:
-                print("RAG enabled but no documents found.")
+                yield {"type": "text", "content": f"📚 已检索到 {len(docs)} 条相关知识库文档...\n\n"}
         except Exception as e:
             print(f"RAG search error: {e}")
             yield {"type": "error", "error": f"RAG检索失败: {str(e)}"}
+
+    # 2. Memory Context [New]
+    memory_context = ""
+    if user_memory:
+        memory_context = f"\n\n【用户长期记忆/画像 (User Memory)】:\n{user_memory}\n请基于此画像了解用户的偏好和关注点。\n"
+        yield {"type": "text", "content": f"🧠 已加载用户长期记忆...\n\n"}
 
     # 初始化客户端
     if base_url:
@@ -256,13 +278,14 @@ def agent_analyze_database_stream(
             content = msg.get('content', '')
             history_text += f"{role}: {content}\n"
     
-    # 构建系统提示 (注入 RAG Context)
+    # 构建系统提示 (注入 RAG Context 和 Memory Context)
     system_prompt = f"""你是一位专业的数据分析助手，擅长使用SQL和Python进行数据分析。
 
 数据库Schema信息:
 {schema}
 
 {rag_context}
+{memory_context}
 
 可用工具:
 1. sql_inter: 执行SQL查询，返回结构化数据（columns, rows, row_count）
@@ -275,14 +298,15 @@ def agent_analyze_database_stream(
 - 前端会根据配置自动渲染图表，无需使用matplotlib
 
 工作流程:
-- 根据用户问题{ "和参考的知识库信息" if rag_context else "" }，选择合适的工具进行分析
+- 根据用户问题{ "、参考的知识库信息" if rag_context else "" }{ "及用户长期记忆" if user_memory else "" }，选择合适的工具进行分析
 - 可以连续多次调用工具
 - SQL查询会自动添加LIMIT 50限制
 - 如果SQL执行失败，分析错误信息并尝试修复
 
 重要要求:
 - 优先参考知识库中的业务定义、指标计算公式或字段说明。
-- 最终必须给出完整的文本回答。
+- **最终回答必须使用中文(Simplified Chinese)**。
+- 如果需要确认执行SQL，请生成相应的工具调用。
 """
     
     messages = [
@@ -381,15 +405,36 @@ def agent_analyze_database_stream(
                 sql_code = None
                 if function_name == "sql_inter" and "sql_query" in function_args:
                     sql_code = function_args["sql_query"]
+                if function_name == "extract_data" and "sql_query" in function_args:
+                    sql_code = function_args["sql_query"]
                 
+                # Intercept SQL execution OR Data Extraction if auto_execute is False
+                if function_name in ("sql_inter", "extract_data") and not allow_auto_execute:
+                    yield {
+                        "type": "tool_call",
+                        "tool": function_name,
+                        "status": "pending_approval",
+                        "sql_code": sql_code
+                    }
+                    yield {"type": "done"}
+                    return
+                
+                # Normal execution
                 tool_call_event = {"type": "tool_call", "tool": function_name, "status": "start"}
                 if sql_code: tool_call_event["sql_code"] = sql_code
                 yield tool_call_event
                 
                 try:
-                    session_id = db_path
+                    session_id = db_path if db_path else "remote_db"
+                    
                     if function_name in ("sql_inter", "extract_data"):
-                        result = execute_tool(function_name, function_args, db_path=db_path, session_id=session_id)
+                        result = execute_tool(
+                            function_name, 
+                            function_args, 
+                            db_path=db_path, 
+                            connection_url=connection_url,
+                            session_id=session_id
+                        )
                     else:
                         result = execute_tool(function_name, function_args, session_id=session_id)
                     
