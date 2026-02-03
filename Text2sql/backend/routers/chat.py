@@ -54,7 +54,9 @@ class AgentAnalyzeRequest(BaseModel):
     model: Optional[str] = None
     max_tool_rounds: int = 12
     use_rag: bool = False
-    enable_memory: bool = False # [New Param]
+    enable_memory: bool = False
+    allow_auto_execute: bool = True  # False = 需用户确认后再执行 SQL
+    use_sql_expert: bool = False  # True = 使用增强 SQL 生成（仅 SQLite 上传文件）
 
 class ConfirmSqlRequest(BaseModel):
     session_id: str
@@ -409,8 +411,9 @@ async def agent_analyze_stream(
                 model=request.model,
                 max_tool_rounds=request.max_tool_rounds,
                 use_rag=request.use_rag,
-                allow_auto_execute=False, # Default is to pause for SQL
-                user_memory=user_memory # Pass memory
+                allow_auto_execute=request.allow_auto_execute,
+                user_memory=user_memory,
+                use_sql_expert=request.use_sql_expert,
             ):
                 if event["type"] == "text":
                     full_content += event["content"]

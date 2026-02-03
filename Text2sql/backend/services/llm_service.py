@@ -5,7 +5,8 @@ import os
 import json
 from typing import List, Dict, Optional, Iterator, Any
 from services.tools import TOOLS_MAP, TOOLS_FUNCTIONS, execute_tool
-from services.rag_service import rag_service_instance # Import RAG
+from services.rag_service import rag_service_instance  # Import RAG
+from services.enhanced_sql import generate_sql_enhanced
 
 # 默认使用环境变量中的 Key
 DEFAULT_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -220,16 +221,17 @@ def _clean_sql(text: str) -> str:
 def agent_analyze_database_stream(
     question: str,
     schema: str,
-    db_path: str = None, 
-    connection_url: str = None, 
+    db_path: str = None,
+    connection_url: str = None,
     history: List[Dict] = None,
     api_key: str = None,
     base_url: str = None,
     model: str = None,
     max_tool_rounds: int = 12,
     use_rag: bool = False,
-    allow_auto_execute: bool = False,
-    user_memory: str = None # [New Param]
+    allow_auto_execute: bool = True,
+    user_memory: str = None,
+    use_sql_expert: bool = False,
 ) -> Iterator[Dict[str, Any]]:
     """
     流式Agent推理函数
@@ -292,10 +294,12 @@ def agent_analyze_database_stream(
 2. extract_data: 将SQL查询结果加载到pandas DataFrame供Python使用
 3. python_inter: 执行Python代码进行数据处理、分析和可视化配置生成
 
-可视化说明:
-- 如需生成图表，在Python代码中创建 'visualization_config' 字典变量
-- 配置格式：{{"type": "bar|line|pie|table", "title": "...", "xAxis": {{"key": "..."}}, "data": [...]}}
-- 前端会根据配置自动渲染图表，无需使用matplotlib
+可视化说明：若需在前端展示图表或表格，在 Python 中必须将 visualization_config 赋值为列表（一个或多个配置），由前端按顺序内联渲染：
+  visualization_config = [
+    {{"type": "table", "title": "图表标题", "data": [{{"列名A": "值1", "列名B": 100}}, {{"列名A": "值2", "列名B": 200}}]}},
+    {{"type": "bar", "title": "另一张图", "data": [...]}}
+  ]
+  type 可为 "table"/"bar"/"line"/"pie"。data 为行列表，每行一个 dict，单元格仅限 str/int/float/bool/None；从 DataFrame 用 to_dict(orient='records') 或先转基本类型。无需 matplotlib。仅生成可视化配置即可；回复正文中禁止用 Markdown 或文字再次输出同一份表格/图表数据，总结时用自然表述即可。
 
 工作流程:
 - 根据用户问题{ "、参考的知识库信息" if rag_context else "" }{ "及用户长期记忆" if user_memory else "" }，选择合适的工具进行分析
@@ -307,6 +311,7 @@ def agent_analyze_database_stream(
 - 优先参考知识库中的业务定义、指标计算公式或字段说明。
 - **最终回答必须使用中文(Simplified Chinese)**。
 - 如果需要确认执行SQL，请生成相应的工具调用。
+- 若已通过 python_inter 的 visualization_config 生成了表格或图表，则**不要在回复正文中用 Markdown 表格（|...|）或逐行数据再次列出**，用简短自然的话概括结论即可，不要套用固定话术。
 """
     
     messages = [
@@ -407,7 +412,18 @@ def agent_analyze_database_stream(
                     sql_code = function_args["sql_query"]
                 if function_name == "extract_data" and "sql_query" in function_args:
                     sql_code = function_args["sql_query"]
-                
+                # SQL 专家：当开启且为 SQLite 文件时，用增强 pipeline 生成 SQL 替换模型输出
+                if use_sql_expert and db_path and function_name in ("sql_inter", "extract_data"):
+                    expert_sql = generate_sql_enhanced(
+                        question=question,
+                        db_path=db_path,
+                        api_key=api_key,
+                        base_url=base_url,
+                        model=model,
+                    )
+                    if expert_sql:
+                        sql_code = expert_sql
+                        function_args = {**function_args, "sql_query": expert_sql}
                 # Intercept SQL execution OR Data Extraction if auto_execute is False
                 if function_name in ("sql_inter", "extract_data") and not allow_auto_execute:
                     yield {

@@ -439,7 +439,9 @@ export const api = {
     signal?: AbortSignal,
     useRag: boolean = false,
     connectionId?: number,
-    enableMemory: boolean = false // [New Param]
+    enableMemory: boolean = false,
+    allowAutoExecute: boolean = true,
+    useSqlExpert: boolean = false
   ): (() => void) => {
     const controller = signal instanceof AbortController ? signal : new AbortController();
 
@@ -460,7 +462,9 @@ export const api = {
         model: model || null,
         max_tool_rounds: maxToolRounds || 12,
         use_rag: useRag,
-        enable_memory: enableMemory // [New Param]
+        enable_memory: enableMemory,
+        allow_auto_execute: allowAutoExecute,
+        use_sql_expert: useSqlExpert
       }),
       signal: controller.signal,
     })

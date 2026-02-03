@@ -3,14 +3,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Settings, Plus, MessageSquare, Send, Upload, LayoutGrid, 
   Database, Loader2, Menu, Sparkles, LogOut, User as UserIcon,
-  Bot, Trash2, BookOpen, Brain, RefreshCw
+  Bot, Trash2, BookOpen, Brain, RefreshCw, CheckCircle
 } from 'lucide-react';
 import { generateSessionTitle } from './services/geminiService';
 import SettingsModal from './components/SettingsModal';
 import KnowledgeBaseModal from './components/KnowledgeBaseModal';
 import MessageBubble from './components/MessageBubble';
 import AuthPage from './components/AuthPage';
-import { Session, Message, AppSettings, User, AVAILABLE_MODELS, SqlResult, ChartType } from './types';
+import { Session, Message, AppSettings, User, AVAILABLE_MODELS, SqlResult, ChartType, SQL_PLACEHOLDER, CHART_PLACEHOLDER } from './types';
 import { translations } from './i18n';
 import { api } from './services/api';
 
@@ -23,7 +23,7 @@ function App() {
        const validModel = AVAILABLE_MODELS.some(m => m.value === parsed.model)
          ? parsed.model
          : 'gemini-2.5-flash';
-       return { ...parsed, model: validModel, useRag: parsed.useRag ?? false, enableMemory: parsed.enableMemory ?? false };
+       return { ...parsed, model: validModel, useRag: parsed.useRag ?? false, enableMemory: parsed.enableMemory ?? false, sqlCheck: parsed.sqlCheck ?? false, sqlExpert: parsed.sqlExpert ?? false };
      }
 
      return {
@@ -34,6 +34,8 @@ function App() {
       useSimulationMode: true,
       useRag: false,
       enableMemory: false,
+      sqlCheck: false,
+      sqlExpert: false,
       dbConfig: {
         type: 'postgres',
         host: 'localhost',
@@ -150,8 +152,9 @@ function App() {
               }
           }
 
+          let executionResults: any[] | undefined;
           if (msg.vizConfig) {
-              executionResult = {
+              const single = {
                   columns: msg.vizConfig.data && msg.vizConfig.data.length > 0 ? Object.keys(msg.vizConfig.data[0]) : [],
                   data: msg.vizConfig.data || [],
                   chartTypeSuggestion: msg.vizConfig.type,
@@ -159,9 +162,11 @@ function App() {
                   visualizationConfig: msg.vizConfig,
                   displayType: msg.vizConfig.displayType || 'both'
               };
+              executionResult = single;
+              executionResults = [single];
           }
 
-          return { ...msg, sqlQuery, executionResult, status };
+          return { ...msg, sqlQuery, executionResult, executionResults, status };
       });
       setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: hydratedMsgs } : s));
     } catch (e) {
@@ -348,11 +353,8 @@ function App() {
               // If confirmation needed, stop thinking and show button
               if (status === 'pending_approval') {
                   if (!preserveInitialContent && contentText === initialContent) contentText = "";
-                  contentText += settings.language === 'zh'
-                      ? "\n\n⚠️ **需要确认**: 我准备执行以下 SQL 查询，请确认..."
-                      : "\n\n⚠️ **Approval Required**: I prepared the following SQL query. Please confirm...";
-                  
-                   setSessions(prev => prev.map(s => s.id === sessionId ? {
+                  contentText += "\n\n" + SQL_PLACEHOLDER + "\n\n";
+                  setSessions(prev => prev.map(s => s.id === sessionId ? {
                     ...s,
                     messages: s.messages.map(m => m.id === msgId ? {
                       ...m,
@@ -373,8 +375,9 @@ function App() {
                 ? `\n\n🔧 **正在执行**: ${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}...` 
                 : `\n\n🔧 **Executing**: ${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}...`;
               
+              // 自动执行时也用占位符嵌入 SQL，由 MessageBubble 在占位符位置渲染一块显示，避免重复
               if (tool === 'sql_inter' && sqlCode) {
-                toolCallText += `\n\n\`\`\`sql\n${sqlCode}\n\`\`\``;
+                toolCallText += "\n\n" + SQL_PLACEHOLDER + "\n\n";
               }
               
               contentText = contentText + toolCallText;
@@ -405,49 +408,47 @@ function App() {
                 if (tool === 'python_inter') {
                   try {
                     const parsed = JSON.parse(result);
-                    if (parsed.type === 'visualization_config' && parsed.config) {
-                      const vizConfig = parsed.config;
-                      
-                      // [FIX] Normalize data if it's column-oriented (object of arrays) instead of row-oriented (array of objects)
-                      let vizData = vizConfig.data;
-                      if (vizData && !Array.isArray(vizData) && typeof vizData === 'object') {
+                    const configs: any[] = Array.isArray(parsed.configs) ? parsed.configs : (parsed.config ? [parsed.config] : []);
+                    if (parsed.type === 'visualization_config' && configs.length > 0) {
+                      const newResults: SqlResult[] = [];
+                      for (const vizConfig of configs) {
+                        let vizData = vizConfig.data;
+                        if (vizData && !Array.isArray(vizData) && typeof vizData === 'object') {
                           const keys = Object.keys(vizData);
                           if (keys.length > 0) {
-                              const rowCount = vizData[keys[0]]?.length || 0;
-                              const newData = [];
-                              for (let i = 0; i < rowCount; i++) {
-                                  const row: any = {};
-                                  keys.forEach(k => {
-                                      row[k] = vizData[k][i];
-                                  });
-                                  newData.push(row);
-                              }
-                              vizData = newData;
-                              // Update local config ref to use new data
-                              vizConfig.data = newData;
+                            const rowCount = vizData[keys[0]]?.length || 0;
+                            const newData: any[] = [];
+                            for (let i = 0; i < rowCount; i++) {
+                              const row: any = {};
+                              keys.forEach(k => { row[k] = vizData[k][i]; });
+                              newData.push(row);
+                            }
+                            vizData = newData;
+                            vizConfig.data = newData;
                           }
+                        }
+                        if (vizConfig.type && vizData && Array.isArray(vizData)) {
+                          const columns = vizData.length > 0 ? Object.keys(vizData[0]) : [];
+                          newResults.push({
+                            columns,
+                            data: vizData,
+                            chartTypeSuggestion: vizConfig.type,
+                            summary: vizConfig.title || (settings.language === 'zh' ? '可视化图表' : 'Visualization'),
+                            visualizationConfig: vizConfig,
+                            displayType: vizConfig.displayType || 'both'
+                          });
+                        }
                       }
-
-                      // Check using the normalized data
-                      if (vizConfig.type && vizData && Array.isArray(vizData)) {
-                        const columns = vizData.length > 0 ? Object.keys(vizData[0]) : [];
-                        contentText += settings.language === 'zh'
-                          ? `\n\n📊 已生成可视化配置，图表将在下方显示`
-                          : `\n\n📊 Visualization config generated, chart will be displayed below`;
-                        
+                      if (newResults.length > 0) {
+                        for (let i = 0; i < newResults.length; i++) {
+                          contentText += '\n\n' + CHART_PLACEHOLDER + '\n\n';
+                        }
                         setSessions(prev => prev.map(s => s.id === sessionId ? {
                           ...s,
                           messages: s.messages.map(m => m.id === msgId ? {
                             ...m,
                             content: contentText,
-                            executionResult: {
-                              columns: columns,
-                              data: vizData, // Use normalized data
-                              chartTypeSuggestion: vizConfig.type,
-                              summary: vizConfig.title || (settings.language === 'zh' ? '可视化图表' : 'Visualization'),
-                              visualizationConfig: vizConfig,
-                              displayType: vizConfig.displayType || 'both'
-                            },
+                            executionResults: [...(m.executionResults || (m.executionResult ? [m.executionResult] : [])), ...newResults],
                             status: Object.keys(toolStatus).length > 0 ? 'executing' as const : 'thinking' as const
                           } : m)
                         } : s));
@@ -674,7 +675,9 @@ function App() {
         controller.signal,
         settings.useRag,
         settings.dbConfig.connectionId,
-        settings.enableMemory // Pass memory flag
+        settings.enableMemory,
+        !settings.sqlCheck, // allow_auto_execute: false when SQL检查 ON
+        settings.sqlExpert // use_sql_expert
       );
     } catch (error: any) {
       console.error("Agent analysis error:", error);
@@ -1107,6 +1110,34 @@ function App() {
                         </button>
                     )}
                 </div>
+
+                {/* SQL检查 Toggle */}
+                <button
+                  onClick={() => setSettings(s => ({ ...s, sqlCheck: !s.sqlCheck }))}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    settings.sqlCheck
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
+                      : 'bg-[#2a2b2d] text-subtext border border-transparent hover:bg-[#353638]'
+                  }`}
+                  title={settings.language === 'zh' ? "开启后需先检查 SQL 再执行" : "When ON, SQL must be checked before execution"}
+                >
+                  <CheckCircle size={14} />
+                  <span>{settings.language === 'zh' ? 'SQL检查' : 'SQL Check'} {settings.sqlCheck ? 'ON' : 'OFF'}</span>
+                </button>
+
+                {/* SQL专家 Toggle */}
+                <button
+                  onClick={() => setSettings(s => ({ ...s, sqlExpert: !s.sqlExpert }))}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    settings.sqlExpert
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                      : 'bg-[#2a2b2d] text-subtext border border-transparent hover:bg-[#353638]'
+                  }`}
+                  title={settings.language === 'zh' ? "开启后使用增强 SQL 生成（仅上传的 SQLite 文件，需 OpenAI 兼容 API）" : "When ON, use enhanced SQL generation (SQLite upload only, OpenAI-compatible API)"}
+                >
+                  <Sparkles size={14} />
+                  <span>{settings.language === 'zh' ? 'SQL专家' : 'SQL Expert'} {settings.sqlExpert ? 'ON' : 'OFF'}</span>
+                </button>
 
               </div>
               <button 
