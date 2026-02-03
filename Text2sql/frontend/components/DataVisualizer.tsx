@@ -151,7 +151,7 @@ const DataVisualizer: React.FC<Props> = ({ result, language }) => {
       {showTable && (
         <div className="overflow-x-auto rounded-lg border border-secondary">
           <div className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-accent uppercase tracking-wider bg-[#2a2b2d] border-b border-secondary">
-            <span>{t.dataTable || 'Data Table'}</span>
+            <span>{visualizationConfig?.title || t.dataTable || 'Data Table'}</span>
           </div>
           <table className="w-full text-sm text-left text-subtext">
             <thead className="text-xs uppercase bg-[#2a2b2d] text-text">

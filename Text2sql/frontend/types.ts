@@ -1,6 +1,11 @@
 
 export type Role = 'user' | 'model';
 
+/** Placeholder in message.content where the SQL block should be rendered (inline, not at bottom) */
+export const SQL_PLACEHOLDER = '{{SQL_PLACEHOLDER}}';
+/** Placeholder where a chart/table should be rendered (one per chart, inline) */
+export const CHART_PLACEHOLDER = '{{CHART_PLACEHOLDER}}';
+
 export type ChartType = 'bar' | 'line' | 'pie' | 'table';
 export type DisplayType = 'table' | 'chart' | 'both'; 
 
@@ -50,6 +55,7 @@ export interface Message {
   status?: MessageStatus;
   sqlQuery?: string;
   executionResult?: SqlResult;
+  executionResults?: SqlResult[];
   error?: string;
 }
 
@@ -83,6 +89,8 @@ export interface AppSettings {
   useSimulationMode: boolean;
   useRag: boolean;
   enableMemory: boolean; // [New]
+  sqlCheck: boolean; // SQL检查 ON = require user to approve SQL before execution (allow_auto_execute false)
+  sqlExpert: boolean; // SQL专家 ON = 使用增强 SQL 生成（仅 SQLite 上传文件，需 OpenAI 兼容 API）
   dbConfig: DbConfig;
 }
 
