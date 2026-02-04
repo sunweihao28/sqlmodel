@@ -1,6 +1,5 @@
 
 
-
 export const translations = {
   en: {
     newAnalysis: "New Analysis",
@@ -82,7 +81,6 @@ export const translations = {
     processing: "思考中...",
     inputPlaceholder: "询问关于数据的问题...",
     upload: "上传数据库",
-    // disclaimer: "前端演示模式。未执行真实 SQL。",
     generatedSql: "SQL代码",
     resultAnalysis: "结果分析",
     visualization: "可视化图表",

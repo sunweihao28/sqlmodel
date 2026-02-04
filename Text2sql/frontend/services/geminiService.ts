@@ -22,11 +22,11 @@ const getApiKey = (settings?: AppSettings): string | undefined => {
 };
 
 // Helper: Generate a short title
-export const generateSessionTitle = async (firstUserMessage: string, language: 'en' | 'zh' = 'en'): Promise<string> => {
-  const apiKey = getApiKey();
-  if (!apiKey) return language === 'zh' ? "分析会话" : "Analysis Session";
+export const generateSessionTitle = async (firstUserMessage: string, language: 'en' | 'zh' = 'en', apiKey?: string): Promise<string> => {
+  const keyToUse = apiKey || process.env.API_KEY;
+  if (!keyToUse) return language === 'zh' ? "分析会话" : "Analysis Session";
   
-  const ai = new GoogleGenAI({ apiKey: apiKey });
+  const ai = new GoogleGenAI({ apiKey: keyToUse });
   const prompt = language === 'zh'
     ? `为以这个问题开始的数据分析会话生成一个非常简短、简洁的标题（最多 5 个字）："${firstUserMessage}"。不要使用引号。`
     : `Generate a very short, concise title (max 5 words) for a data analysis session starting with this question: "${firstUserMessage}". Do not use quotes.`;

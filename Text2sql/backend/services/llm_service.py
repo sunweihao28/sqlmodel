@@ -1,34 +1,58 @@
 
 from google import genai
+from google.genai import types
 from openai import OpenAI
 import os
 import json
+import time
 from typing import List, Dict, Optional, Iterator, Any
 from services.tools import TOOLS_MAP, TOOLS_FUNCTIONS, execute_tool
 from services.rag_service import rag_service_instance  # Import RAG
 from services.enhanced_sql import generate_sql_enhanced
 
-# 默认使用环境变量中的 Key
-DEFAULT_API_KEY = os.environ.get("GEMINI_API_KEY")
+# 加载环境变量中的 Key
+DEFAULT_GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+DEFAULT_OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+
+def _should_use_gemini(model_name: str, base_url: str = None) -> bool:
+    """
+    判断是否应该使用 Google GenAI 原生客户端。
+    规则：
+    1. 如果提供了 base_url，通常是 OpenAI 兼容接口（DeepSeek, OneAPI等），返回 False。
+    2. 如果没有 base_url，且模型名包含 'gemini'，返回 True。
+    3. 其他情况（如 gpt-4o 且无 base_url），默认使用 OpenAI 官方接口，返回 False。
+    """
+    if base_url:
+        return False
+    if model_name and "gemini" in model_name.lower():
+        return True
+    return False
 
 def _call_llm(prompt: str, model_name: str = 'gpt-4o', api_key: str = None, base_url: str = None) -> str:
-    # ... existing implementation ...
     try:
-        if base_url:
-            client = OpenAI(api_key=api_key or "sk-dummy", base_url=base_url)
+        use_gemini = _should_use_gemini(model_name, base_url)
+        
+        if not use_gemini:
+            # OpenAI / Compatible
+            key = api_key or DEFAULT_OPENAI_KEY
+            if not key and not base_url:
+                print(f"Warning: No API Key found for OpenAI model {model_name}")
+            
+            client = OpenAI(api_key=key or "sk-dummy", base_url=base_url)
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}]
             )
             return response.choices[0].message.content
         else:
-            key_to_use = api_key if api_key else DEFAULT_API_KEY
-            if not key_to_use:
+            # Gemini Native
+            key = api_key or DEFAULT_GEMINI_KEY
+            if not key:
                 raise ValueError("API Key is missing for Gemini.")
             
-            client = genai.Client(api_key=key_to_use)
+            client = genai.Client(api_key=key)
             response = client.models.generate_content(
-                model=model_name if "gemini" in model_name else 'gemini-2.5-flash',
+                model=model_name,
                 contents=prompt
             )
             return response.text
@@ -36,10 +60,7 @@ def _call_llm(prompt: str, model_name: str = 'gpt-4o', api_key: str = None, base
         print(f"LLM Call Error ({model_name}): {e}")
         return f"LLM Error: {str(e)}"
 
-# ... existing SQL generation functions (generate_sql_from_text, fix_sql_query, etc.) ...
-
 def generate_sql_from_text(question: str, history: List[Dict], schema: str, api_key: str = None, base_url: str = None, model: str = None) -> str:
-    # ... existing code ...
     history_text = ""
     if history:
         history_text = "CONVERSATION HISTORY:\n"
@@ -70,7 +91,6 @@ def generate_sql_from_text(question: str, history: List[Dict], schema: str, api_
     return _clean_sql(response)
 
 def fix_sql_query(bad_sql: str, error_msg: str, schema: str, api_key: str = None, base_url: str = None, model: str = None) -> str:
-    # ... existing code ...
     prompt = f"""
     You are a SQL debugging expert. 
     I tried to execute a query on this SQLite database, but it failed.
@@ -94,7 +114,6 @@ def fix_sql_query(bad_sql: str, error_msg: str, schema: str, api_key: str = None
     return _clean_sql(response)
 
 def generate_analysis(question: str, data: list, api_key: str = None, base_url: str = None, model: str = None) -> str:
-    # ... existing code ...
     data_preview = str(data[:20]) 
     prompt = f"""
     User asked: "{question}"
@@ -105,7 +124,6 @@ def generate_analysis(question: str, data: list, api_key: str = None, base_url: 
     return _call_llm(prompt, model or 'gemini-2.5-flash', api_key, base_url)
 
 def generate_schema_summary(schema: str, api_key: str = None, base_url: str = None, model: str = None) -> str:
-    # ... existing code ...
     prompt = f"""
     You are a helpful Data Assistant.
     A user has just uploaded a new SQLite database file.
@@ -125,7 +143,6 @@ def generate_schema_summary(schema: str, api_key: str = None, base_url: str = No
     return _call_llm(prompt, model or 'gemini-2.5-flash', api_key, base_url)
 
 def generate_schema_summary_stream(schema: str, api_key: str = None, base_url: str = None, model: str = None) -> Iterator[str]:
-    # ... existing code ...
     prompt = f"""
     You are a helpful Data Assistant.
     A user has just uploaded a new SQLite database file.
@@ -143,34 +160,25 @@ def generate_schema_summary_stream(schema: str, api_key: str = None, base_url: s
     Language: Chinese (Simplified).
     """
 
-    if base_url:
+    use_gemini = _should_use_gemini(model, base_url)
+    
+    if not use_gemini:
         yield from _stream_openai_compatible(prompt, model or 'gpt-4o', api_key, base_url)
     else:
         yield from _stream_gemini(prompt, model or 'gemini-2.5-flash', api_key)
 
 def summarize_user_history(history_text: str, api_key: str = None, base_url: str = None, model: str = None) -> str:
-    """
-    生成用户的长期记忆/画像摘要
-    """
     prompt = f"""
 请阅读以下的历史对话记录，并将其浓缩为一个简洁的用户画像/摘要。
-
-要求：
-1. 提取用户的个性化偏好（如喜欢的图表类型、关注的数据领域）。
-2. 提取用户经常查询的关键业务指标或结论。
-3. 省略日常寒暄和非必要的对话细节。
-4. 输出一段连贯的文本，作为后续对话的"长期记忆"背景。
-5. 不要添加任何开场白或结束语，直接输出摘要内容。
-
 历史记录内容：
 {history_text}
 """
     return _call_llm(prompt, model or 'gemini-2.5-flash', api_key, base_url)
 
 def _stream_openai_compatible(prompt: str, model: str, api_key: str, base_url: str) -> Iterator[str]:
-    # ... existing code ...
     try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        key = api_key or DEFAULT_OPENAI_KEY
+        client = OpenAI(api_key=key or "sk-dummy", base_url=base_url)
         stream = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -189,9 +197,8 @@ def _stream_openai_compatible(prompt: str, model: str, api_key: str, base_url: s
         yield f"Error: {str(e)}"
 
 def _stream_gemini(prompt: str, model: str, api_key: str) -> Iterator[str]:
-    # ... existing code ...
     try:
-        key_to_use = api_key or os.environ.get("GEMINI_API_KEY")
+        key_to_use = api_key or DEFAULT_GEMINI_KEY
         if not key_to_use:
             yield "Error: API Key is missing for Gemini."
             return
@@ -208,7 +215,6 @@ def _stream_gemini(prompt: str, model: str, api_key: str) -> Iterator[str]:
         yield f"Error: {str(e)}"
 
 def _clean_sql(text: str) -> str:
-    # ... existing code ...
     if not text: return ""
     sql = text.strip()
     if sql.startswith("```"):
@@ -232,15 +238,17 @@ def agent_analyze_database_stream(
     allow_auto_execute: bool = True,
     user_memory: str = None,
     use_sql_expert: bool = False,
+    user_id: int = None,
 ) -> Iterator[Dict[str, Any]]:
     """
-    流式Agent推理函数
+    流式Agent推理函数 (Supports both OpenAI and Gemini Native)
     """
     # 1. RAG Context
     rag_context = ""
-    if use_rag:
+    if use_rag and user_id: 
         try:
             docs = rag_service_instance.hybrid_search(
+                user_id,
                 question, 
                 api_key=api_key, 
                 base_url=base_url
@@ -255,21 +263,26 @@ def agent_analyze_database_stream(
             print(f"RAG search error: {e}")
             yield {"type": "error", "error": f"RAG检索失败: {str(e)}"}
 
-    # 2. Memory Context [New]
+    # 2. Memory Context
     memory_context = ""
     if user_memory:
         memory_context = f"\n\n【用户长期记忆/画像 (User Memory)】:\n{user_memory}\n请基于此画像了解用户的偏好和关注点。\n"
         yield {"type": "text", "content": f"🧠 已加载用户长期记忆...\n\n"}
 
-    # 初始化客户端
-    if base_url:
-        client = OpenAI(api_key=api_key or "sk-dummy", base_url=base_url)
+    # Determine Provider
+    is_gemini = _should_use_gemini(model, base_url)
+    
+    # Initialize Clients
+    client = None
+    if not is_gemini:
+        key = api_key or DEFAULT_OPENAI_KEY
+        client = OpenAI(api_key=key or "sk-dummy", base_url=base_url)
     else:
-        key_to_use = api_key or os.environ.get("GEMINI_API_KEY")
+        key_to_use = api_key or DEFAULT_GEMINI_KEY
         if not key_to_use:
-            yield {"type": "error", "error": "API Key is missing."}
+            yield {"type": "error", "error": "API Key is missing for Gemini."}
             return
-        client = OpenAI(api_key=key_to_use)
+        client = genai.Client(api_key=key_to_use)
     
     # 格式化历史记录
     history_text = ""
@@ -280,8 +293,10 @@ def agent_analyze_database_stream(
             content = msg.get('content', '')
             history_text += f"{role}: {content}\n"
     
-    # 构建系统提示 (注入 RAG Context 和 Memory Context)
-    system_prompt = f"""你是一位专业的数据分析助手，擅长使用SQL和Python进行数据分析。
+    # 构建系统提示 - 根据是否有 schema 区分模式
+    if schema:
+        # DB Connected Mode
+        system_prompt = f"""你是一位专业的数据分析助手，擅长使用SQL和Python进行数据分析。
 
 数据库Schema信息:
 {schema}
@@ -313,81 +328,191 @@ def agent_analyze_database_stream(
 - 如果需要确认执行SQL，请生成相应的工具调用。
 - 若已通过 python_inter 的 visualization_config 生成了表格或图表，则**不要在回复正文中用 Markdown 表格（|...|）或逐行数据再次列出**，用简短自然的话概括结论即可，不要套用固定话术。
 """
-    
+    else:
+        # General Chat Mode (No DB)
+        system_prompt = f"""你是一位智能助手。当前用户未连接任何数据库，因此无法执行 SQL 查询或访问数据表。
+
+{rag_context}
+{memory_context}
+
+你可以进行通用对话、逻辑推理、代码编写（使用 python_inter）或回答基于知识库/长期记忆的问题。
+如果用户要求查询数据库数据，请礼貌地提示用户先连接数据库或上传文件。
+
+可用工具:
+1. python_inter: 执行通用 Python 代码计算或逻辑验证。
+
+**最终回答必须使用中文(Simplified Chinese)**。
+"""
+
+    # Messages structure
     messages = [
         {"role": "system", "content": system_prompt},
     ]
-    
     if history_text:
         messages.append({"role": "user", "content": history_text})
-    
     messages.append({"role": "user", "content": question})
     
-    tools = [{"type": "function", "function": tool_def} for tool_def in TOOLS_MAP]
+    # Tools definition - Filter SQL tools if no schema
+    all_tools = [{"type": "function", "function": tool_def} for tool_def in TOOLS_MAP]
+    if not schema:
+        # Only keep python_inter for general purpose, remove SQL tools
+        tools = [t for t in all_tools if t["function"]["name"] == "python_inter"]
+    else:
+        tools = all_tools
+        
+    gemini_tools = [t['function'] for t in tools]
     
     tool_rounds = 0
     
     while tool_rounds < max_tool_rounds:
         tool_rounds += 1
         
-        try:
+        # --- Retry Loop for Network Instability ---
+        max_retries = 3
+        retry_delay = 1
+        
+        response_message_content = ""
+        tool_calls = []
+        
+        success = False
+        last_error = None
+        
+        for attempt in range(max_retries):
             try:
-                response = client.chat.completions.create(
-                    model=model or ('gpt-4o' if base_url else 'gemini-2.5-flash'),
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    stream=True,
-                )
-            except Exception as api_error:
-                error_msg = f"LLM API调用失败: {type(api_error).__name__}: {str(api_error)}"
-                yield {"type": "error", "error": error_msg}
-                return
-            
-            response_message_content = ""
-            tool_calls = []
-            
-            for chunk in response:
-                try:
-                    if not chunk or not hasattr(chunk, 'choices') or not chunk.choices: continue
-                    if len(chunk.choices) == 0: continue
-                    choice = chunk.choices[0]
-                    if not choice or not hasattr(choice, 'delta'): continue
-                    delta = choice.delta
-                    if not delta: continue
-                    
-                    if hasattr(delta, 'content') and delta.content:
-                        response_message_content += delta.content
-                        yield {"type": "text", "content": delta.content}
-                    
-                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            if not hasattr(tc_delta, 'index'): continue
-                            idx = tc_delta.index
-                            if idx >= len(tool_calls):
-                                tool_calls.extend([None] * (idx + 1 - len(tool_calls)))
-                            if tool_calls[idx] is None:
-                                tool_calls[idx] = {
-                                    "id": getattr(tc_delta, 'id', '') or "",
+                # Reset accumulators for this attempt
+                response_message_content = ""
+                tool_calls = []
+                
+                if is_gemini:
+                    # --- GEMINI NATIVE PATH ---
+                    # Convert messages to Gemini Format
+                    gemini_contents = []
+                    for m in messages:
+                        if m['role'] == 'system': continue
+                        if m['role'] == 'user':
+                            gemini_contents.append(types.Content(role='user', parts=[types.Part(text=m['content'])]))
+                        elif m['role'] == 'assistant':
+                            parts = []
+                            if m.get('content'): parts.append(types.Part(text=m['content']))
+                            if m.get('tool_calls'):
+                                for tc in m['tool_calls']:
+                                    args = {}
+                                    try: args = json.loads(tc['function']['arguments'])
+                                    except: pass
+                                    parts.append(types.Part(function_call=types.FunctionCall(name=tc['function']['name'], args=args)))
+                            gemini_contents.append(types.Content(role='model', parts=parts))
+                        elif m['role'] == 'tool':
+                            gemini_contents.append(types.Content(role='user', parts=[types.Part(
+                                function_response=types.FunctionResponse(name=m['name'], response={'result': m['content']})
+                            )]))
+
+                    # Prepare config with available tools (might be empty list if no tools allowed, but here we at least have python)
+                    gemini_config = types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.1
+                    )
+                    if gemini_tools:
+                         gemini_config.tools = [types.Tool(function_declarations=gemini_tools)]
+
+                    response = client.models.generate_content_stream(
+                        model=model or 'gemini-2.5-flash',
+                        contents=gemini_contents,
+                        config=gemini_config
+                    )
+
+                    for chunk in response:
+                        if chunk.text:
+                            response_message_content += chunk.text
+                            yield {"type": "text", "content": chunk.text}
+                        if chunk.function_calls:
+                            for fc in chunk.function_calls:
+                                tool_calls.append({
+                                    "id": "gemini_call_id", 
                                     "type": "function",
-                                    "function": {"name": "", "arguments": ""}
-                                }
-                            if hasattr(tc_delta, 'function') and tc_delta.function:
-                                if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
-                                    tool_calls[idx]["function"]["name"] = tc_delta.function.name
-                                if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
-                                    tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
-                except Exception as e:
-                    continue
+                                    "function": {
+                                        "name": fc.name,
+                                        "arguments": json.dumps(fc.args) 
+                                    }
+                                })
+                else:
+                    # --- OPENAI COMPATIBLE PATH ---
+                    # If no tools available (e.g. extremely restricted mode), don't pass tools param
+                    req_kwargs = {
+                        "model": model or 'gpt-4o',
+                        "messages": messages,
+                        "stream": True,
+                    }
+                    if tools:
+                        req_kwargs["tools"] = tools
+                        req_kwargs["tool_choice"] = "auto"
+
+                    response = client.chat.completions.create(**req_kwargs)
+                    
+                    for chunk in response:
+                        if not chunk or not hasattr(chunk, 'choices') or not chunk.choices: continue
+                        if len(chunk.choices) == 0: continue
+                        choice = chunk.choices[0]
+                        if not choice or not hasattr(choice, 'delta'): continue
+                        delta = choice.delta
+                        if not delta: continue
+                        
+                        if hasattr(delta, 'content') and delta.content:
+                            response_message_content += delta.content
+                            yield {"type": "text", "content": delta.content}
+                        
+                        if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                            for tc_delta in delta.tool_calls:
+                                if not hasattr(tc_delta, 'index'): continue
+                                idx = tc_delta.index
+                                if idx >= len(tool_calls):
+                                    tool_calls.extend([None] * (idx + 1 - len(tool_calls)))
+                                if tool_calls[idx] is None:
+                                    tool_calls[idx] = {
+                                        "id": getattr(tc_delta, 'id', '') or "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""}
+                                    }
+                                if hasattr(tc_delta, 'function') and tc_delta.function:
+                                    if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
+                                        tool_calls[idx]["function"]["name"] = tc_delta.function.name
+                                    if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
+                                        tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
+
+                success = True
+                break  # Break retry loop on success
+
+            except Exception as e:
+                last_error = e
+                print(f"LLM Stream Error (Attempt {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    yield {"type": "text", "content": "\n⚠️ [网络波动，正在重试...]\n"}
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    # Final attempt failed
+                    pass
+        
+        if not success:
+             error_detail = f"Process Error: {str(last_error)}"
+             yield {"type": "error", "error": error_detail}
+             yield {"type": "done"}
+             return
+
+        # --- End of Retry Loop ---
+
+        try:
+            # --- COMMON LOGIC: Execute Tools & Update History ---
             
             valid_tool_calls = [tc for tc in tool_calls if tc is not None and tc.get("function", {}).get("name")]
             
             if not valid_tool_calls:
                 if not response_message_content:
+                    # fallback just in case
                     yield {"type": "text", "content": "分析完成。"}
                 yield {"type": "done"}
                 return
             
+            # Append assistant message to history
             assistant_msg = {
                 "role": "assistant",
                 "content": response_message_content,
@@ -412,7 +537,8 @@ def agent_analyze_database_stream(
                     sql_code = function_args["sql_query"]
                 if function_name == "extract_data" and "sql_query" in function_args:
                     sql_code = function_args["sql_query"]
-                # SQL 专家：当开启且为 SQLite 文件时，用增强 pipeline 生成 SQL 替换模型输出
+
+                # SQL 专家模式
                 if use_sql_expert and db_path and function_name in ("sql_inter", "extract_data"):
                     expert_sql = generate_sql_enhanced(
                         question=question,
@@ -424,7 +550,8 @@ def agent_analyze_database_stream(
                     if expert_sql:
                         sql_code = expert_sql
                         function_args = {**function_args, "sql_query": expert_sql}
-                # Intercept SQL execution OR Data Extraction if auto_execute is False
+
+                # Human-in-the-loop SQL Check
                 if function_name in ("sql_inter", "extract_data") and not allow_auto_execute:
                     yield {
                         "type": "tool_call",
@@ -435,7 +562,7 @@ def agent_analyze_database_stream(
                     yield {"type": "done"}
                     return
                 
-                # Normal execution
+                # Yield Tool Call Event
                 tool_call_event = {"type": "tool_call", "tool": function_name, "status": "start"}
                 if sql_code: tool_call_event["sql_code"] = sql_code
                 yield tool_call_event
@@ -462,7 +589,7 @@ def agent_analyze_database_stream(
                     }
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tool_call["id"],
+                        "tool_call_id": tool_call.get("id", "gemini_id"),
                         "name": function_name,
                         "content": result
                     })
@@ -476,7 +603,7 @@ def agent_analyze_database_stream(
                     }
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tool_call["id"],
+                        "tool_call_id": tool_call.get("id", "gemini_id"),
                         "name": function_name,
                         "content": error_msg
                     })

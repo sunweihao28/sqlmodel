@@ -537,7 +537,7 @@ export const api = {
     return () => controller.abort();
   },
   
-  // Refresh Memory [New Method]
+  // Refresh Memory
   refreshMemory: async (apiKey?: string, baseUrl?: string, model?: string) => {
       try {
           const response = await fetch(`${API_URL}/chat/memory/refresh`, {
@@ -557,6 +557,37 @@ export const api = {
           return await response.json();
       } catch (error) {
           handleApiError(error, "Refresh Memory");
+      }
+  },
+  
+  // Get Memory [New]
+  getMemory: async () => {
+      try {
+          const response = await fetch(`${API_URL}/chat/memory`, {
+              method: 'GET',
+              headers: getHeaders(),
+          });
+          if (!response.ok) throw new Error('Failed to get memory');
+          return await response.json();
+      } catch (error) {
+          handleApiError(error, "Get Memory");
+          throw error;
+      }
+  },
+  
+  // Update Memory [New]
+  updateMemory: async (content: string) => {
+      try {
+          const response = await fetch(`${API_URL}/chat/memory`, {
+              method: 'POST',
+              headers: getHeaders(),
+              body: JSON.stringify({ content })
+          });
+          if (!response.ok) throw new Error('Failed to update memory');
+          return await response.json();
+      } catch (error) {
+          handleApiError(error, "Update Memory");
+          throw error;
       }
   },
 

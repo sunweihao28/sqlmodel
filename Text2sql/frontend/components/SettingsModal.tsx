@@ -1,6 +1,6 @@
 
-import React, { useState } from 'react';
-import { X, Save, Database, Server, Key, Globe, Languages, FileCheck, Trash2, CheckCircle, Loader2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Save, Database, Server, Key, Globe, Languages, FileCheck, Trash2, CheckCircle, Loader2, Brain } from 'lucide-react';
 import { AppSettings, DbConfig } from '../types';
 import { translations } from '../i18n';
 import { api } from '../services/api';
@@ -14,12 +14,47 @@ interface Props {
 
 const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) => {
   const [localSettings, setLocalSettings] = React.useState<AppSettings>(settings);
-  const [activeTab, setActiveTab] = React.useState<'general' | 'database'>('general');
+  const [activeTab, setActiveTab] = React.useState<'general' | 'database' | 'memory'>('general');
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'none' | 'success' | 'error'>('none');
   const [connectionMsg, setConnectionMsg] = useState('');
   
+  // Memory State
+  const [memoryContent, setMemoryContent] = useState('');
+  const [loadingMemory, setLoadingMemory] = useState(false);
+  const [savingMemory, setSavingMemory] = useState(false);
+  
   const t = translations[localSettings.language || 'en'];
+
+  useEffect(() => {
+      if (isOpen && activeTab === 'memory') {
+          fetchMemory();
+      }
+  }, [isOpen, activeTab]);
+
+  const fetchMemory = async () => {
+      setLoadingMemory(true);
+      try {
+          const res = await api.getMemory();
+          setMemoryContent(res.memory || '');
+      } catch (e) {
+          console.error("Failed to load memory", e);
+      } finally {
+          setLoadingMemory(false);
+      }
+  };
+
+  const handleSaveMemory = async () => {
+      setSavingMemory(true);
+      try {
+          await api.updateMemory(memoryContent);
+          // Optional: Show success toast
+      } catch (e) {
+          console.error("Failed to save memory", e);
+      } finally {
+          setSavingMemory(false);
+      }
+  };
 
   if (!isOpen) return null;
 
@@ -94,6 +129,16 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
             }`}
           >
             {t.dbConnection}
+          </button>
+          <button
+            onClick={() => setActiveTab('memory')}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'memory' 
+                ? 'border-accent text-accent' 
+                : 'border-transparent text-subtext hover:text-text'
+            }`}
+          >
+            {localSettings.language === 'zh' ? '记忆管理' : 'Memory'}
           </button>
         </div>
 
@@ -170,7 +215,7 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
               </div>
 
             </div>
-          ) : (
+          ) : activeTab === 'database' ? (
             <div className="space-y-6">
               
               {/* Upload File Status (SQLite Mode) */}
@@ -292,6 +337,49 @@ const SettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) =
                 )}
               </div>
             </div>
+          ) : (
+             <div className="space-y-6 h-full flex flex-col">
+                 <div className="p-4 bg-amber-900/20 border border-amber-800/50 rounded-lg text-sm text-subtext">
+                    <p className="flex items-center gap-2 mb-2 font-semibold text-amber-200">
+                        <Brain size={16} />
+                        {localSettings.language === 'zh' ? '长期记忆管理' : 'Long-Term Memory Management'}
+                    </p>
+                    <p>
+                        {localSettings.language === 'zh' 
+                           ? "这里存储了 Agent 对您的个性化偏好和历史关键信息的总结。您可以手动编辑或补充，以便 Agent 更好地理解您。"
+                           : "This stores the Agent's summary of your preferences and key historical info. You can manually edit or add to it."}
+                    </p>
+                 </div>
+                 
+                 <div className="flex-1 flex flex-col">
+                    <label className="block text-sm font-medium text-subtext mb-2">
+                         {localSettings.language === 'zh' ? '记忆内容' : 'Memory Content'}
+                    </label>
+                    {loadingMemory ? (
+                         <div className="flex-1 flex items-center justify-center border border-secondary rounded-lg bg-[#2a2b2d]">
+                             <Loader2 className="animate-spin text-subtext" />
+                         </div>
+                    ) : (
+                        <textarea 
+                            value={memoryContent}
+                            onChange={(e) => setMemoryContent(e.target.value)}
+                            className="flex-1 w-full bg-[#2a2b2d] border border-secondary rounded-lg p-4 text-text text-sm font-mono focus:outline-none focus:border-accent resize-none"
+                            placeholder={localSettings.language === 'zh' ? "暂无记忆..." : "No memory yet..."}
+                        />
+                    )}
+                 </div>
+                 
+                 <div className="flex justify-end">
+                     <button 
+                        onClick={handleSaveMemory}
+                        disabled={savingMemory || loadingMemory}
+                        className="px-4 py-2 bg-blue-600/20 text-blue-300 border border-blue-600/50 rounded-lg hover:bg-blue-600/30 transition-colors flex items-center gap-2 text-sm"
+                     >
+                        {savingMemory ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                        {localSettings.language === 'zh' ? '保存记忆' : 'Save Memory'}
+                     </button>
+                 </div>
+             </div>
           )}
         </div>
 

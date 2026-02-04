@@ -12,8 +12,8 @@ router = APIRouter(prefix="/api/rag", tags=["rag"])
 
 @router.get("/documents")
 def list_documents(current_user: models.User = Depends(auth.get_current_user)):
-    """列出知识库中的所有文档"""
-    return rag_service_instance.list_documents()
+    """列出当前用户的所有文档"""
+    return rag_service_instance.list_documents(current_user.id)
 
 @router.post("/upload")
 def upload_document(
@@ -22,7 +22,7 @@ def upload_document(
     base_url: Optional[str] = Form(None),
     current_user: models.User = Depends(auth.get_current_user)
 ):
-    """上传并索引文档"""
+    """上传并索引文档 (User isolated)"""
     # 保存到临时文件
     suffix = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -30,8 +30,8 @@ def upload_document(
         tmp_path = tmp.name
     
     try:
-        # [修改] 传递动态 Key 给 Service
         doc_id = rag_service_instance.add_document(
+            current_user.id,
             tmp_path, 
             file.filename,
             api_key=api_key,
@@ -47,11 +47,11 @@ def upload_document(
 @router.delete("/documents/{doc_id}")
 def delete_document(
     doc_id: str,
-    api_key: Optional[str] = None, # 可选，用于 Chroma 删除操作
+    api_key: Optional[str] = None, 
     current_user: models.User = Depends(auth.get_current_user)
 ):
-    """删除文档"""
-    success = rag_service_instance.remove_document(doc_id, api_key=api_key)
+    """删除文档 (User isolated)"""
+    success = rag_service_instance.remove_document(current_user.id, doc_id, api_key=api_key)
     if not success:
         raise HTTPException(status_code=404, detail="Document not found or failed to delete")
     return {"status": "deleted"}

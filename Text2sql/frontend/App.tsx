@@ -84,7 +84,10 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isKbOpen, setIsKbOpen] = useState(false); 
-  const [isRefreshingMemory, setIsRefreshingMemory] = useState(false); // [New]
+  const [isRefreshingMemory, setIsRefreshingMemory] = useState(false);
+  
+  // [Fix] Separate summary generation state from general streaming
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamController, setStreamController] = useState<AbortController | null>(null);
@@ -114,7 +117,7 @@ function App() {
 
       setSessions([placeholderSession, ...formattedRemoteSessions]);
       setCurrentSessionId('1');
-      // Reset current active DB config on load (user needs to select session)
+      // Reset settings to clean state on initial load
       setSettings(prev => ({
         ...prev,
         dbConfig: { ...prev.dbConfig, fileId: undefined, uploadedPath: '', connectionId: undefined }
@@ -137,33 +140,60 @@ function App() {
       const hydratedMsgs = msgs.map((msg: any) => {
           let sqlQuery = msg.sqlQuery;
           let executionResult = undefined;
+          let executionResults: SqlResult[] = [];
           let status = msg.status || 'executed';
 
           if (msg.steps && Array.isArray(msg.steps)) {
               const sqlStep = msg.steps.find((s: any) => s.tool === 'sql_inter');
-              // Only override if sqlQuery not already set by metadata
               if (sqlStep && sqlStep.input && !sqlQuery) {
                   sqlQuery = sqlStep.input;
               }
-              // If we have a pending step, set status
               if (sqlStep && sqlStep.status === 'pending_approval') {
                   status = 'pending_approval';
-                  sqlQuery = sqlStep.input; // Ensure query is set
+                  sqlQuery = sqlStep.input; 
               }
           }
 
-          let executionResults: any[] | undefined;
+          // [Fix] Robust hydration of vizConfig from history
           if (msg.vizConfig) {
-              const single = {
-                  columns: msg.vizConfig.data && msg.vizConfig.data.length > 0 ? Object.keys(msg.vizConfig.data[0]) : [],
-                  data: msg.vizConfig.data || [],
-                  chartTypeSuggestion: msg.vizConfig.type,
-                  summary: msg.vizConfig.title || 'Visualization',
-                  visualizationConfig: msg.vizConfig,
-                  displayType: msg.vizConfig.displayType || 'both'
-              };
-              executionResult = single;
-              executionResults = [single];
+              const configs = Array.isArray(msg.vizConfig) ? msg.vizConfig : [msg.vizConfig];
+              
+              for (const cfg of configs) {
+                  // Normalize data structure (handle column-oriented vs row-oriented)
+                  let vizData = cfg.data || [];
+                  if (vizData && !Array.isArray(vizData) && typeof vizData === 'object') {
+                      try {
+                          const keys = Object.keys(vizData);
+                          if (keys.length > 0) {
+                              const rowCount = vizData[keys[0]]?.length || 0;
+                              const newData: any[] = [];
+                              for (let i = 0; i < rowCount; i++) {
+                                  const row: any = {};
+                                  keys.forEach(k => { row[k] = vizData[k][i]; });
+                                  newData.push(row);
+                              }
+                              vizData = newData;
+                              cfg.data = newData; // update config reference too
+                          }
+                      } catch(e) {}
+                  }
+
+                  if (cfg.type && Array.isArray(vizData)) {
+                       const singleResult: SqlResult = {
+                          columns: vizData.length > 0 ? Object.keys(vizData[0]) : [],
+                          data: vizData,
+                          chartTypeSuggestion: cfg.type || 'table',
+                          summary: cfg.title || 'Visualization',
+                          visualizationConfig: cfg,
+                          displayType: cfg.displayType || 'both'
+                      };
+                      executionResults.push(singleResult);
+                  }
+              }
+              
+              if (executionResults.length > 0) {
+                  executionResult = executionResults[0]; // Legacy support
+              }
           }
 
           return { ...msg, sqlQuery, executionResult, executionResults, status };
@@ -216,7 +246,7 @@ function App() {
         if (session && session.messages.length === 0) {
             loadSessionMessages(currentSessionId);
         }
-        // When switching session, apply its DB config to global settings temporarily so new messages use it
+        // When switching to an existing session, apply its DB config
         if (session) {
             setSettings(prev => ({
                 ...prev,
@@ -224,14 +254,16 @@ function App() {
                     ...prev.dbConfig, 
                     fileId: session.fileId, 
                     connectionId: session.connectionId,
-                    // Clear uploaded path if it's a connection session to update UI
                     uploadedPath: session.connectionId ? '' : prev.dbConfig.uploadedPath 
                 }
             }));
         }
     } else if (currentSessionId === '1') {
-        // Keep current settings as is, or reset? 
-        // Better to keep them so user can start new chat with current config.
+        // [Fix] When switching to "New Analysis" (placeholder), clear DB config to ensure isolation
+        setSettings(prev => ({
+            ...prev,
+            dbConfig: { ...prev.dbConfig, fileId: undefined, connectionId: undefined, uploadedPath: '' }
+        }));
     }
   }, [currentSessionId]);
 
@@ -262,7 +294,7 @@ function App() {
     if (sessionId === '1') return;
     if (!window.confirm(settings.language === 'zh' ? '确定要删除此会话吗？' : 'Delete this session?')) return;
     if (sessionId === currentSessionId) {
-        setCurrentSessionId('1');
+        handleNewSession();
     }
     setSessions(prev => prev.filter(s => s.id !== sessionId));
     try {
@@ -277,6 +309,7 @@ function App() {
       streamController.abort();
       setStreamController(null);
       setIsStreaming(false);
+      setIsGeneratingSummary(false); // also reset this
       setIsProcessing(false);
       setSessions(prev => prev.map(s => s.id === currentSessionId ? {
         ...s,
@@ -308,23 +341,26 @@ function App() {
 
   const handleNewSession = async () => {
     setCurrentSessionId('1');
+    // [Fix] Explicitly clear DB config when starting a fresh session manually
+    setSettings(prev => ({
+        ...prev,
+        dbConfig: { ...prev.dbConfig, fileId: undefined, connectionId: undefined, uploadedPath: '' }
+    }));
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
   
   // Reusable function to process stream callbacks
-  // [Fix] Added preserveInitialContent to allow appending instead of replacing
   const createStreamCallbacks = (sessionId: string, msgId: string, initialContent: string, preserveInitialContent: boolean = false) => {
       let contentText = initialContent;
       const toolStatus: Record<string, string> = {};
       let hasReceivedText = false;
       let hasReceivedToolCall = false;
       let hasReceivedToolResult = false;
+      let hasError = false; 
       
       return {
           onText: (text: string) => {
               hasReceivedText = true;
-              
-              // Only clear initial content if we are NOT preserving it (e.g. initial thinking msg)
               if (!preserveInitialContent && contentText === initialContent) {
                 const hasIcon = /^[🔧📊✅❌💡📝🤔📚🧠]/.test(text.trim());
                 if (!hasIcon) {
@@ -350,7 +386,6 @@ function App() {
               hasReceivedToolCall = true;
               toolStatus[tool] = status;
               
-              // If confirmation needed, stop thinking and show button
               if (status === 'pending_approval') {
                   if (!preserveInitialContent && contentText === initialContent) contentText = "";
                   contentText += "\n\n" + SQL_PLACEHOLDER + "\n\n";
@@ -363,7 +398,6 @@ function App() {
                       status: 'pending_approval' as const
                     } : m)
                   } : s));
-                  // The backend stream ends here automatically
                   return;
               }
 
@@ -375,7 +409,6 @@ function App() {
                 ? `\n\n🔧 **正在执行**: ${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}...` 
                 : `\n\n🔧 **Executing**: ${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}...`;
               
-              // 自动执行时也用占位符嵌入 SQL，由 MessageBubble 在占位符位置渲染一块显示，避免重复
               if (tool === 'sql_inter' && sqlCode) {
                 toolCallText += "\n\n" + SQL_PLACEHOLDER + "\n\n";
               }
@@ -397,7 +430,6 @@ function App() {
                 ? new RegExp(`🔧 \\*\\*正在执行\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL查询' : tool === 'python_inter' ? 'Python代码分析' : tool === 'extract_data' ? '数据提取' : tool}\\.\\.\\.`, 'g')
                 : new RegExp(`🔧 \\*\\*Executing\\*\\*: [^\\n]+${tool === 'sql_inter' ? 'SQL Query' : tool === 'python_inter' ? 'Python Analysis' : tool === 'extract_data' ? 'Data Extraction' : tool}\\.\\.\\.`, 'g');
               
-              // Only replace if we are sure it's just the status text
               if (!preserveInitialContent) {
                    contentText = contentText.replace(toolCallPattern, '');
               }
@@ -507,13 +539,19 @@ function App() {
           },
           onError: (error: string) => {
               console.error("Agent stream error:", error);
+              hasError = true;
+              
+              const errorMsg = (settings.language === 'zh' 
+                    ? `\n\n❌ 分析出错: ${error}` 
+                    : `\n\n❌ Analysis error: ${error}`);
+              
+              contentText += errorMsg;
+
               setSessions(prev => prev.map(s => s.id === sessionId ? {
                 ...s,
                 messages: s.messages.map(m => m.id === msgId ? {
                   ...m,
-                  content: contentText + (settings.language === 'zh' 
-                    ? `\n\n❌ 分析出错: ${error}` 
-                    : `\n\n❌ Analysis error: ${error}`),
+                  content: contentText,
                   status: 'error' as const,
                   error: error
                 } : m)
@@ -523,8 +561,9 @@ function App() {
               setStreamController(null);
           },
           onComplete: () => {
+              if (hasError) return;
+
               if (!hasReceivedText && !hasReceivedToolCall && !hasReceivedToolResult) {
-                // If it's a resume stream (confirmation), it's ok if we received nothing new if the result was just injected
                 if (!preserveInitialContent) {
                     contentText = settings.language === 'zh' 
                     ? '❌ 分析完成，但未收到响应内容。' 
@@ -543,7 +582,6 @@ function App() {
                 }
               }
               
-              // Only mark as executed if not pending approval
               setSessions(prev => {
                   const currentSess = prev.find(s => s.id === sessionId);
                   const currentMsg = currentSess?.messages.find(m => m.id === msgId);
@@ -569,12 +607,8 @@ function App() {
   const handleSendMessage = async () => {
     if (!input.trim() || isProcessing || isStreaming) return;
     
-    // Check if any DB source is configured
-    if (!settings.dbConfig.fileId && !settings.dbConfig.connectionId) {
-      alert(settings.language === 'zh' ? '请先上传数据库文件或在设置中连接数据库' : 'Please upload a database file or connect to a database in settings');
-      setIsSettingsOpen(true);
-      return;
-    }
+    // [Fix] REMOVED the check that blocked sending if no DB is connected. 
+    // Now allows chatting without DB.
 
     // 1. If this is the placeholder session ('1'), create a real one now
     let activeSessionId = currentSessionId;
@@ -622,9 +656,11 @@ function App() {
     const activeSession = sessions.find(s => s.id === activeSessionId) || { messages: [] };
     const updatedHistory = [...activeSession.messages, userMsg];
 
-    // Generate title if it's the first real message
-    if (activeSession.messages.length === 0) {
-      generateSessionTitle(userMsg.content, settings.language).then(newTitle => {
+    // [Fix] Generate title logic: Check if this is the FIRST USER message
+    // even if system messages (summary) exist. AND pass API Key.
+    const userMessagesCount = activeSession.messages.filter(m => m.role === 'user').length;
+    if (userMessagesCount === 0) {
+      generateSessionTitle(userMsg.content, settings.language, settings.customApiKey).then(newTitle => {
         setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, title: newTitle } : s));
       });
     }
@@ -784,6 +820,8 @@ function App() {
         const controller = new AbortController();
         setStreamController(controller);
         setIsStreaming(true);
+        // [Fix] Set summary generation flag
+        setIsGeneratingSummary(true);
 
         const summaryMessageId = newRealSession.id + '_summary';
         const summaryMessage: Message = {
@@ -820,10 +858,12 @@ function App() {
                 messages: s.messages.map(m => m.id === summaryMessageId ? { ...m, content: summaryText } : m)
               } : s));
               setIsStreaming(false);
+              setIsGeneratingSummary(false);
               setStreamController(null);
             },
             () => {
               setIsStreaming(false);
+              setIsGeneratingSummary(false);
               setStreamController(null);
             },
             controller.signal,
@@ -831,6 +871,7 @@ function App() {
           );
         } catch (sumErr) {
           setIsStreaming(false);
+          setIsGeneratingSummary(false);
           setStreamController(null);
         }
 
@@ -984,8 +1025,8 @@ function App() {
 
         {/* Chat Area */}
         <div className="flex-1 overflow-y-auto" ref={scrollRef}>
-          {/* Streaming Indicator */}
-          {isStreaming && !settings.dbConfig.fileId && !settings.dbConfig.connectionId && (
+          {/* Streaming Indicator [Fix] Only show if truly generating summary from upload */}
+          {isGeneratingSummary && (
             <div className="flex items-center gap-3 p-4 mx-4 mb-4 bg-[#2a2b2d] rounded-lg border border-accent/30">
               <Loader2 size={14} className="animate-spin text-white" />
               <div className="flex-1 text-sm">{settings.language === 'zh' ? '正在生成摘要...' : 'Generating summary...'}</div>

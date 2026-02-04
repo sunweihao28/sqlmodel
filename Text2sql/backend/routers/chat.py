@@ -75,7 +75,29 @@ class RefreshMemoryRequest(BaseModel):
     base_url: Optional[str] = None
     model: Optional[str] = None
 
+class UpdateMemoryRequest(BaseModel):
+    content: str
+
 # --- Endpoints ---
+
+@router.get("/memory")
+def get_user_memory(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(database.get_db)
+):
+    """Get raw long-term memory"""
+    return {"memory": current_user.long_term_memory or ""}
+
+@router.post("/memory")
+def update_user_memory(
+    request: UpdateMemoryRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(database.get_db)
+):
+    """Manually update long-term memory"""
+    current_user.long_term_memory = request.content
+    db.commit()
+    return {"status": "success", "memory": current_user.long_term_memory}
 
 @router.post("/memory/refresh")
 def refresh_memory(
@@ -249,7 +271,7 @@ def execute_sql_command(
                 result['error'], 
                 schema, 
                 api_key=request.api_key, 
-                base_url=request.base_url,
+                base_url=request.base_url, 
                 model=request.model
             )
             retry_result = execute_query_with_engine(engine, fixed_sql)
@@ -272,8 +294,8 @@ def execute_sql_command(
     analysis = generate_analysis(
         request.message, 
         result['data'], 
-        api_key=request.api_key,
-        base_url=request.base_url,
+        api_key=request.api_key, 
+        base_url=request.base_url, 
         model=request.model
     )
 
@@ -350,13 +372,14 @@ async def agent_analyze_stream(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Fetch User Memory if enabled
-    user_memory = None
-    if request.enable_memory:
-        user_memory = current_user.long_term_memory
+    # [Fix] Extract primitive values from current_user before any commit/stream
+    # This avoids DetachedInstanceError when accessing user attributes inside the async stream
+    user_id_int = current_user.id
+    user_memory_str = current_user.long_term_memory if request.enable_memory else None
 
     db_path = None
     connection_url = None
+    schema = None # Default schema to None if no DB
     
     try:
         if session.file_id:
@@ -372,24 +395,24 @@ async def agent_analyze_stream(
     except Exception:
         pass
 
-    if not db_path and not connection_url:
-        raise HTTPException(status_code=400, detail="No valid data source configured")
-
-    try:
-        engine = get_engine_for_source(db, session.file_id, session.connection_id, current_user.id)
-        schema = get_db_schema_from_engine(engine)
-    except Exception as e:
-         raise HTTPException(status_code=500, detail=f"Failed to inspect schema: {str(e)}")
+    # [Fix] Allow processing without DB source (General Chat / Memory Chat)
+    if db_path or connection_url:
+        try:
+            engine = get_engine_for_source(db, session.file_id, session.connection_id, user_id_int)
+            schema = get_db_schema_from_engine(engine)
+        except Exception as e:
+             # If DB connection fails, we log it but continue so user can still chat
+             print(f"Failed to inspect schema: {str(e)}")
 
     session_id_str = session.id
     
     # Save user message
     user_msg = models.ChatMessage(session_id=session.id, role="user", content=request.message)
     db.add(user_msg)
-    db.commit() 
+    db.commit() # This commits and expires ORM objects (current_user, session)
     
-    # Initial count for title generation later
-    history_count = db.query(models.ChatMessage).filter(models.ChatMessage.session_id == session.id).count()
+    # Use scalar query for count to avoid object expiration issues if possible, or simple query
+    history_count = db.query(func.count(models.ChatMessage.id)).filter(models.ChatMessage.session_id == session_id_str).scalar()
 
     async def generate_stream() -> Iterator[str]:
         full_content = ""
@@ -412,8 +435,9 @@ async def agent_analyze_stream(
                 max_tool_rounds=request.max_tool_rounds,
                 use_rag=request.use_rag,
                 allow_auto_execute=request.allow_auto_execute,
-                user_memory=user_memory,
+                user_memory=user_memory_str, # Use extracted string
                 use_sql_expert=request.use_sql_expert,
+                user_id=user_id_int, # Use extracted int
             ):
                 if event["type"] == "text":
                     full_content += event["content"]
@@ -433,22 +457,28 @@ async def agent_analyze_stream(
                         tool_steps[-1]["output"] = str(event["result"])[:2000]
                         try:
                             res_obj = json.loads(event["result"])
-                            # [Fix] Ensure viz_config is captured whenever found
+                            # [Fix] Check for BOTH 'configs' (list) and 'config' (single)
                             if isinstance(res_obj, dict) and res_obj.get("type") == "visualization_config":
-                                viz_config = res_obj.get("config")
+                                viz_config = res_obj.get("configs") or res_obj.get("config")
                         except: pass
                 elif event["type"] == "error":
                     full_content += f"\n[Error: {event['error']}]"
 
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
-            if history_count == 1: # Only Update title if it's the first exchange
-                session.title = request.message[:30]
-            session.updated_at = func.now()
+            # Re-fetch session to ensure it's attached for update
+            sess = db.query(models.ChatSession).filter(models.ChatSession.id == session_id_str).first()
+            if sess:
+                if history_count == 1: 
+                    # Note: We rely on frontend to update title smartly, but backend can do a basic update if needed.
+                    # If the frontend title generation works, this might be overwritten later or ignored.
+                    # We only update if title is default.
+                    if sess.title == "New Analysis" or sess.title.endswith(".sqlite") or sess.title.endswith(".db"):
+                         sess.title = request.message[:30]
+                sess.updated_at = func.now()
             
             # Save message to DB
             meta = {"steps": tool_steps}
-            # [Fix] Only add vizConfig if it exists
             if viz_config:
                 meta["vizConfig"] = viz_config
                 
@@ -468,8 +498,11 @@ async def agent_analyze_stream(
         except Exception as e:
             err_msg = str(e)
             yield f"data: {json.dumps({'type': 'error', 'error': err_msg}, ensure_ascii=False)}\n\n"
-            db.add(models.ChatMessage(session_id=session_id_str, role="model", content=f"Error: {err_msg}", meta_data={"error": True}))
-            db.commit()
+            # Try to log error to DB if possible
+            try:
+                db.add(models.ChatMessage(session_id=session_id_str, role="model", content=f"Error: {err_msg}", meta_data={"error": True}))
+                db.commit()
+            except: pass
 
         yield "data: [DONE]\n\n"
 
@@ -488,9 +521,12 @@ async def confirm_and_resume_stream(
     """
     Execute a pending SQL and resume agent generation.
     """
+    # [Fix] Extract ID early
+    user_id_int = current_user.id
+    
     session = db.query(models.ChatSession).filter(
         models.ChatSession.id == request.session_id,
-        models.ChatSession.user_id == current_user.id
+        models.ChatSession.user_id == user_id_int
     ).first()
 
     if not session:
@@ -554,7 +590,7 @@ async def confirm_and_resume_stream(
     prompt = f"I have executed the SQL. Here is the result:\n{result}\n\nPlease analyze this data and answer my original question in Chinese (Simplified)."
 
     try:
-        engine = get_engine_for_source(db, session.file_id, session.connection_id, current_user.id)
+        engine = get_engine_for_source(db, session.file_id, session.connection_id, user_id_int)
         schema = get_db_schema_from_engine(engine)
     except:
         schema = ""
@@ -579,7 +615,8 @@ async def confirm_and_resume_stream(
                 model=request.model,
                 max_tool_rounds=5, 
                 use_rag=False, 
-                allow_auto_execute=True 
+                allow_auto_execute=True,
+                user_id=user_id_int # [New Param]
             ):
                 if event["type"] == "text":
                     full_content += event["content"]
@@ -593,14 +630,17 @@ async def confirm_and_resume_stream(
                         try:
                             res_obj = json.loads(event["result"])
                             if isinstance(res_obj, dict) and res_obj.get("type") == "visualization_config":
-                                viz_config = res_obj.get("config")
+                                viz_config = res_obj.get("configs") or res_obj.get("config")
                         except: pass
                 elif event["type"] == "error":
                     full_content += f"\n[Error: {event['error']}]"
 
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
-            session.updated_at = func.now()
+            # Re-fetch session to ensure update
+            sess = db.query(models.ChatSession).filter(models.ChatSession.id == request.session_id).first()
+            if sess:
+                 sess.updated_at = func.now()
             
             # Save the new analysis as a new message
             meta = {"steps": tool_steps}
@@ -620,8 +660,10 @@ async def confirm_and_resume_stream(
         except Exception as e:
             err_msg = str(e)
             yield f"data: {json.dumps({'type': 'error', 'error': err_msg}, ensure_ascii=False)}\n\n"
-            db.add(models.ChatMessage(session_id=request.session_id, role="model", content=f"Error: {err_msg}", meta_data={"error": True}))
-            db.commit()
+            try:
+                db.add(models.ChatMessage(session_id=request.session_id, role="model", content=f"Error: {err_msg}", meta_data={"error": True}))
+                db.commit()
+            except: pass
 
         yield "data: [DONE]\n\n"
 
