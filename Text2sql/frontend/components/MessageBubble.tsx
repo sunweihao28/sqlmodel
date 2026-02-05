@@ -7,6 +7,20 @@ import { Message, SQL_PLACEHOLDER, CHART_PLACEHOLDER } from '../types';
 import DataVisualizer from './DataVisualizer';
 import { translations } from '../i18n';
 
+/** 仅当整段被 ```markdown ... ``` 包裹时去掉包裹再交给 ReactMarkdown，避免被当成代码块显示；不处理 ```python/```sql 等，不影响代码块渲染 */
+function unwrapMarkdownCodeBlock(text: string): string {
+  const trimmed = text.trim();
+  const openMatch = trimmed.match(/^```markdown\s*\n?/i);
+  if (openMatch && trimmed.endsWith('```')) {
+    const afterOpen = trimmed.slice(openMatch[0].length);
+    const lastBackticks = afterOpen.lastIndexOf('```');
+    if (lastBackticks !== -1) {
+      return afterOpen.slice(0, lastBackticks).replace(/\n?$/, '').trim();
+    }
+  }
+  return text;
+}
+
 interface Props {
   message: Message;
   language: 'en' | 'zh';
@@ -147,13 +161,13 @@ const MessageBubble: React.FC<Props> = ({ message, language, onConfirmSql, onRej
               }
               return part ? (
                 <React.Fragment key={i}>
-                  <ReactMarkdown components={{ img: ImageComponent }}>{part}</ReactMarkdown>
+                  <ReactMarkdown components={{ img: ImageComponent }}>{unwrapMarkdownCodeBlock(part)}</ReactMarkdown>
                 </React.Fragment>
               ) : null;
             });
-          })() : (
+          })(          ) : (
             <>
-              <ReactMarkdown components={{ img: ImageComponent }}>{message.content ?? ''}</ReactMarkdown>
+              <ReactMarkdown components={{ img: ImageComponent }}>{unwrapMarkdownCodeBlock(message.content ?? '')}</ReactMarkdown>
               {sqlBlockJsx}
             </>
           )}
